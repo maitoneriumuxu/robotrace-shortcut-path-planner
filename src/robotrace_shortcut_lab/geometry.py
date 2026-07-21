@@ -87,3 +87,72 @@ def curvature_slew_per_m2(x_mm: np.ndarray, y_mm: np.ndarray) -> np.ndarray:
 def expanded_mask(mask: np.ndarray, half_width: int) -> np.ndarray:
     kernel = np.ones(half_width * 2 + 1, dtype=np.int16)
     return np.convolve(mask.astype(np.int16), kernel, mode="same") > 0
+
+
+def path_order_is_forward(
+    source_x_mm: np.ndarray,
+    source_y_mm: np.ndarray,
+    path_x_mm: np.ndarray,
+    path_y_mm: np.ndarray,
+) -> bool:
+    """各候補線分が対応する原コース線分に対して逆行していないか調べる。"""
+
+    source_dx = np.diff(source_x_mm).astype(np.float64)
+    source_dy = np.diff(source_y_mm).astype(np.float64)
+    path_dx = np.diff(path_x_mm).astype(np.float64)
+    path_dy = np.diff(path_y_mm).astype(np.float64)
+    dot = source_dx * path_dx + source_dy * path_dy
+    return bool(np.all(dot > 0.0))
+
+
+def _segments_intersect(
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    cx: float,
+    cy: float,
+    dx: float,
+    dy: float,
+) -> bool:
+    ab_c = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    ab_d = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax)
+    cd_a = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx)
+    cd_b = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx)
+    return bool(ab_c * ab_d < 0.0 and cd_a * cd_b < 0.0)
+
+
+def self_intersection_count(
+    x_mm: np.ndarray,
+    y_mm: np.ndarray,
+    cell_mm: float = 50.0,
+) -> int:
+    """短い線分用の空間格子で、隣接線分を除く交差数をO(N)相当で数える。"""
+
+    buckets: dict[tuple[int, int], list[int]] = {}
+    intersections = 0
+    for index in range(x_mm.size - 1):
+        mid_x = 0.5 * (float(x_mm[index]) + float(x_mm[index + 1]))
+        mid_y = 0.5 * (float(y_mm[index]) + float(y_mm[index + 1]))
+        cell_x = int(np.floor(mid_x / cell_mm))
+        cell_y = int(np.floor(mid_y / cell_mm))
+        for offset_y in (-1, 0, 1):
+            for offset_x in (-1, 0, 1):
+                for previous in buckets.get(
+                    (cell_x + offset_x, cell_y + offset_y), ()
+                ):
+                    if index - previous <= 1:
+                        continue
+                    if _segments_intersect(
+                        float(x_mm[previous]),
+                        float(y_mm[previous]),
+                        float(x_mm[previous + 1]),
+                        float(y_mm[previous + 1]),
+                        float(x_mm[index]),
+                        float(y_mm[index]),
+                        float(x_mm[index + 1]),
+                        float(y_mm[index + 1]),
+                    ):
+                        intersections += 1
+        buckets.setdefault((cell_x, cell_y), []).append(index)
+    return intersections
