@@ -1,7 +1,7 @@
 [project]
 name = "robotrace-shortcut-lab"
-version = "0.2.0"
-description = "Fast geometric shortcut-path study for LN5.x"
+version = "1.0.0"
+description = "Deterministic shortcut path and predicted-time comparison for Robotrace"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["matplotlib>=3.9,<4", "numpy>=2.0,<3"]

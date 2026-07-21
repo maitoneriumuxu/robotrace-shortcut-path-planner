@@ -1,10 +1,7 @@
-"""LN5.xショートカット経路の高速幾何検討。"""
+"""ロボトレース用ショートカット経路のオフライン比較。"""
 
-from .algorithm import generate_paths
 from .course import load_course
-from .evaluation import evaluate
-from .models import Settings
+from .model import PlannerConfig
+from .portable import run_comparison
 
-__all__ = ["Settings", "evaluate", "generate_paths", "load_course"]
-
-__version__ = "0.2.0"
+__all__ = ["PlannerConfig", "load_course", "run_comparison"]
