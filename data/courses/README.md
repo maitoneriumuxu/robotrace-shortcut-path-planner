@@ -9,3 +9,5 @@
 - ライセンス: MIT（`LICENSE.robotrace_course_cad`）
 
 再取込機能と元JSONは削除し、アルゴリズム検討に必要な正規化座標だけを残しています。
+
+`board_boundaries.json`は、読み取り専用`robotrace_course_cad`の元JSONから正確に確認できた大会だけを収録する任意メタデータです。現在は2025年全日本の使用板セル境界のみを持ち、未収録大会を板内確認済みとは扱いません。

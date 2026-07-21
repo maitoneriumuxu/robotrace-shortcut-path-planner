@@ -1,0 +1,19 @@
+{
+  "format": "robotrace-board-boundary-v1",
+  "source_repository_commit": "523e8338111d75b905ed37d18f3f5bf95e0e0532",
+  "courses": {
+    "2025alljapan": {
+      "source_file": "examples/synthetic/2025alljapan.json",
+      "description": "CADのoccupied_grid_cellsをスタート基準座標へ剛体変換した1350×900 mm板セルの和集合",
+      "confirmed": true,
+      "rectangles_mm": [
+        [-2000.0, -1100.0, -6350.0, 400.0],
+        [-1100.0, -200.0, -6350.0, 400.0],
+        [-200.0, 700.0, -5000.0, 400.0],
+        [700.0, 1600.0, -6350.0, -950.0],
+        [1600.0, 2500.0, -6350.0, -950.0],
+        [2500.0, 3400.0, -5000.0, -950.0]
+      ]
+    }
+  }
+}

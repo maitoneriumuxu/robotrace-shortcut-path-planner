@@ -52,6 +52,31 @@ class PlannerConfig:
         (800.0, -5.0),
         (800.0, 5.0),
     )
+    global_resample_interval_mm: float = 10.0
+    reference_anchor_limit: int = 256
+    embedded_anchor_limit: int = 96
+    reference_edge_limit: int = 20_000
+    embedded_edge_limit: int = 1_200
+    reference_top_k: int = 64
+    embedded_top_k: int = 8
+    reference_max_skip_mm: float = 12_000.0
+    embedded_max_skip_mm: float = 6_000.0
+    shortcut_min_skip_mm: float = 250.0
+    shortcut_min_saving_mm: float = 35.0
+    connector_max_angle_deg: float = 55.0
+    # 規定1-3の最大投影円（直径250 mm）と白線半幅9.5 mmから作る、
+    # 「この距離を超えると規定最大車体でも白線へ届かない」絶対上限。
+    # 実車外形が未登録なので、この値以内でも実走適合とは断定しない。
+    rule_max_robot_radius_mm: float = 125.0
+    rule_line_half_width_mm: float = 9.5
+    line_parallel_warning_distance_mm: float = 45.0
+    line_parallel_warning_angle_deg: float = 15.0
+    # 交差リスクは予測時間と分離して保持する。既定は純粋な
+    # 最短時間下限を見るため零とし、比較時だけ明示的に変更できる。
+    line_crossing_penalty_s: float = 0.0
+    line_shallow_crossing_penalty_s: float = 0.0
+    line_parallel_penalty_s_per_m: float = 0.0
+    board_robot_margin_mm: float = 125.0
 
 
 @dataclass(frozen=True)
@@ -150,3 +175,117 @@ class Comparison:
     candidate_evaluation_count: int
     window_center_indices: tuple[int, ...]
     approximate_o_n_scans: int
+
+
+@dataclass(frozen=True)
+class BoardBoundary:
+    """CADの競技板セルを正規化座標へ変換した走行面境界。"""
+
+    rectangles_mm: tuple[tuple[float, float, float, float], ...]
+    source: str
+    confirmed: bool
+
+
+@dataclass(frozen=True)
+class GlobalPath:
+    """約10 mm間隔へ再サンプリングした大域経路。"""
+
+    label: str
+    x_mm: np.ndarray
+    y_mm: np.ndarray
+    cumulative_distance_mm: np.ndarray
+    source_progress_index: np.ndarray
+    source_progress_distance_mm: np.ndarray
+    shortcut_edge_id: np.ndarray
+    deliberate_line_crossing: np.ndarray
+    yaw_rad: np.ndarray
+    curvature_per_m: np.ndarray
+    curvature_slew_per_m2: np.ndarray
+    speed_mps: np.ndarray
+    generation_s: float
+    selected_edges: tuple[tuple[int, int, int, str], ...]
+
+
+@dataclass(frozen=True)
+class GlobalMetrics:
+    predicted_time_s: float
+    length_m: float
+    shortening_percent: float
+    max_speed_mps: float
+    max_omega_deg_s: float
+    min_radius_mm: float
+    max_curvature_slew_per_m2: float
+    shortcut_edge_count: int
+    skipped_source_distance_m: float
+    line_crossing_count: int
+    min_line_crossing_angle_deg: float
+    past_line_crossing_count: int
+    future_line_crossing_count: int
+    parallel_line_distance_m: float
+    valid: bool
+    warning: str
+    violation: str
+
+
+@dataclass(frozen=True)
+class EvaluatedGlobalPath:
+    path: GlobalPath
+    metrics: GlobalMetrics
+    distance_m: np.ndarray
+    speed_mps: np.ndarray
+    speed_limit_reason: np.ndarray
+    cumulative_time_s: np.ndarray
+    speed_plan_s: float
+
+
+@dataclass(frozen=True)
+class GlobalSearchStats:
+    mode: str
+    anchor_count: int
+    candidate_edge_count: int
+    valid_edge_count: int
+    geometry_check_s: float
+    graph_search_s: float
+    top_k_count: int
+    full_evaluation_s: float
+    local_finish_s: float
+    total_s: float
+    approximate_o_n_scans: int
+    max_work_memory_bytes: int
+
+
+@dataclass(frozen=True)
+class GlobalSearchResult:
+    mode: str
+    anchor_indices: np.ndarray
+    best_global: EvaluatedGlobalPath
+    adopted: EvaluatedGlobalPath
+    stats: GlobalSearchStats
+    fallback_used: bool
+
+
+@dataclass(frozen=True)
+class GlobalComparison:
+    local: Comparison
+    current_baseline: EvaluatedGlobalPath
+    geometric_lower_bound: EvaluatedGlobalPath
+    reference: GlobalSearchResult
+    embedded_lite: GlobalSearchResult
+    final: EvaluatedGlobalPath
+    board_boundary: BoardBoundary | None
+    board_status: str
+
+
+@dataclass(frozen=True)
+class BatchCourseResult:
+    course_id: str
+    baseline_time_s: float
+    selected_time_s: float
+    improvement_s: float
+    mode: str
+    anchor_count: int
+    candidate_edge_count: int
+    total_s: float
+    fallback_used: bool
+    valid: bool
+    status: str

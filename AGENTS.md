@@ -1,35 +1,45 @@
 # AGENTS.md
 
-このリポジトリは、保存済みコースに対するショートカット経路生成、簡易予測時間評価、比較画像確認だけに使う。
+このリポジトリは、保存済み大会コースに対するショートカット経路生成、固定ATTACK速度モデルによる予測時間評価、比較画像確認だけに使う。
 
 ## 守ること
 
-- `data/courses/normalized/`のコースデータを削除・改変しない。
+- `data/courses/normalized/`の31大会コースを削除・改変しない。
 - `data/courses/README.md`と`data/courses/LICENSE.robotrace_course_cad`を残す。
-- 参照先の`RoboTrace_LN5.xx`／`LN5.xx_GitHub`は読み取り専用とし、変更しない。
-- 入力は当面`data/courses/normalized/2025alljapan.tsv`だけに限定する。
-- 目的は経路生成、予測時間評価、`outputs/result.png`による画像確認である。
-- CSV出力、外部ログ読込、GUI、実機制御、ファームウェア組み込みは追加しない。
-- SciPy汎用最適化、ニューラルネットワーク、再帰、大規模行列を使わない。
-- 経路生成は固定回数・決定論的・O(N)の局所更新とし、最大6100点、float32、heap不要のC実装へ置換できる形を保つ。
-- 新方式の点は、必ず原コース同一indexの法線方向オフセットだけで表す。最近傍探索で別区間へ移さない。
-- 候補は1本ずつ生成・評価し、最良パラメータ番号だけを保持する。全候補を同時保持する設計にしない。
-- Python固有のベクトル評価・描画と、将来Cへ移植する局所更新・速度スキャンを分離する。
-- 改善後はテストを実行し、2025年全日本で`outputs/result.png`を必ず再生成して目視確認する。
-- Pythonの予測結果を実走可能、実機保証、競技上安全と断定しない。
+- 参照先の`RoboTrace_LN5.xx`／`LN5.xx_GitHub`／`robotrace_course_cad`は読み取り専用とし、変更しない。
+- 入力大会を2025年全日本へ固定せず、CLIの`--course`で任意の正規化TSVを扱う。
+- 2025年固有の点index、画像座標、手作業で選んだ入口・出口をアルゴリズムへ埋め込まない。
+- 局所ヘアピングループ専用ロジックは比較基準とフォールバックに残すが、大域探索の最終方式にはしない。
+- 大域探索はPC品質確認用`reference`とRX651移植候補`embedded-lite`を分ける。
+- referenceでもSciPy汎用非線形最適化、ニューラルネットワーク、乱数依存は使わない。
+- embedded-liteは最大6100点、float32、固定配列化可能、再帰なし、大規模密行列なし、heap不要へ置換可能、決定論的な構成を保つ。
+- 大域DAGの辺は必ず`start_index < end_index`とし、`source_progress_index`を単調増加にする。
+- 大域経路は原ライン同一index法線へ限定しない。選択後は約10mm間隔へ再サンプリングする。
+- 現在のFrenet法線方式は局所仕上げと既存最良フォールバックに残す。
+- 速度モデルは`PlannerConfig`の固定ATTACK値を正とし、予測時間を良くする目的で変更しない。
+- 1500deg/sは速度ハード制約ではなく、omega依存許容縦加速度が20m/s²となる閾値として扱う。
+- AALP互換、実点間距離の前後速度スキャン4反復、始終端3.6m/sを維持する。
+- 走行可能領域と白線重なりを分けて評価する。板境界がない大会は「板境界未確認」と明記し、実車外形未登録なら競技適合を断定しない。
+- Elastic Band、旧#7、現在の長窓最良経路をフォールバックへ残し、新方式が遅い・無効なら現在最良へ戻す。
+- 全31大会コースで異常終了、決定性、非悪化、フォールバックを回帰確認する。
+- CSV、外部ログ読込、GUI、実機制御、ファームウェア組み込みは追加しない。
+- Python予測結果を実走可能、実機保証、競技上安全、競技規定適合と断定しない。
 
 ## 比較画像
 
-- 左に原コース、現行Elastic Band相当、時間選択型最良経路を等倍で重ねる。
-- 右上に予測時間、短縮時間、経路長、短縮率、最大横オフセット、最小半径、最大`|dκ/ds|`、生成時間、制約判定を日本語で示す。
-- 右下に3方式の速度プロファイルを示す。
-- 線は見分けられる細さで統一し、原コースだけを太くしない。
-- 仮設定値での比較であり、実機保証値ではないことを画像内に明記する。
+- 2025年全日本は`outputs/result.png`へ、原コース、現在経路、reference、embedded-lite、最終経路、アンカー、採用辺を表示する。
+- 最大短縮区間に入口、出口、スキップ元区間、意図的白線交差を表示する。
+- 速度、累積時間、現在経路との差、GFCP/AALP/加速/減速/最高速度の支配要因を表示する。
+- 比較表へ予測時間、4秒差、現在差、長さ、幾何指標、交差数、探索規模、計算時間、判定を表示する。
+- 全31大会のembedded-lite結果は`outputs/all_courses.png`へまとめる。
+- 速度モデル固定値、板境界・実車外形の確認状態、実走保証でないことを画像内に明記する。
 
 ## 検証コマンド
 
 ```powershell
 $env:PYTHONPATH="src"
 python -m unittest discover -s tests -v
-python -m robotrace_shortcut_lab
+python -m robotrace_shortcut_lab --course data/courses/normalized/2025alljapan.tsv --mode reference
+python -m robotrace_shortcut_lab --course data/courses/normalized/2025alljapan.tsv --mode embedded-lite
+python -m robotrace_shortcut_lab --all-courses --mode embedded-lite
 ```

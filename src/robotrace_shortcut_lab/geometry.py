@@ -78,7 +78,9 @@ def curvature_slew_per_m2(x_mm: np.ndarray, y_mm: np.ndarray) -> np.ndarray:
     curvature = signed_curvature_per_m(x_mm, y_mm)
     # 10 mm点列の量子化ノイズを速度ペナルティへ直接入れないよう、
     # Cへ移植可能な固定21点移動平均に相当する平滑化を行う。
-    curvature = np.convolve(curvature, np.ones(21) / 21.0, mode="same")
+    window = min(21, curvature.size if curvature.size % 2 else curvature.size - 1)
+    window = max(1, window)
+    curvature = np.convolve(curvature, np.ones(window) / window, mode="same")
     slew = np.gradient(curvature, distance, edge_order=1)
     slew[~np.isfinite(slew)] = 0.0
     return slew

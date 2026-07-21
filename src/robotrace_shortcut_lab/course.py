@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 
-from .model import Course
+from .model import BoardBoundary, Course
 
 
 def load_course(path: str | Path) -> Course:
@@ -32,3 +33,31 @@ def load_course(path: str | Path) -> Course:
         raise ValueError("コースにNaNまたは無限値があります")
 
     return Course(course_id, values[:, 0], values[:, 1], values[:, 2])
+
+
+def load_board_boundary(
+    course: Course,
+    metadata_path: str | Path = "data/courses/board_boundaries.json",
+) -> BoardBoundary | None:
+    """CADから確認できた競技板セル境界を読む。未収録コースはNone。"""
+
+    source = Path(metadata_path)
+    if not source.exists():
+        return None
+    data = json.loads(source.read_text(encoding="utf-8"))
+    entry = data.get("courses", {}).get(course.course_id)
+    if not isinstance(entry, dict):
+        return None
+    raw_rectangles = entry.get("rectangles_mm", [])
+    rectangles = tuple(
+        tuple(float(value) for value in rectangle)
+        for rectangle in raw_rectangles
+        if isinstance(rectangle, list) and len(rectangle) == 4
+    )
+    if not rectangles:
+        return None
+    return BoardBoundary(
+        rectangles,
+        str(entry.get("source_file", source)),
+        bool(entry.get("confirmed", False)),
+    )
