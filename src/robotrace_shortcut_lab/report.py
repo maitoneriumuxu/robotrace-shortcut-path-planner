@@ -222,7 +222,7 @@ def write_result_png(
     figure.text(
         0.5,
         0.012,
-        "注意: 過去ATTACKパラメータ3基準（3.6～13.0 m/s、GFCP 3.0 m/s、指数0.33、加速20～55 m/s²、減速55 m/s²）。"
+        "注意: 過去ATTACKパラメータ3基準を調整（3.6～13.0 m/s、GFCP R10 3.6 m/s、指数0.33、加速20～55 m/s²、減速55 m/s²）。"
         "Python予測は実走可能性・実機性能・競技上の安全を保証しません。",
         ha="center",
         va="bottom",

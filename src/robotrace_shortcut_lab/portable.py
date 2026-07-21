@@ -283,7 +283,9 @@ def _detect_long_window_centers(course: Course, config: PlannerConfig) -> tuple[
     ):
         if magnitude[index] < 0.85 * maximum:
             continue
-        if gfcp_speed[index] > config.min_speed_mps + 1.0e-4:
+        # R10と最低速度が同じ場合も、最低速度へ完全クランプされた点だけでなく
+        # その110%以内の相対的な低速ピークをヘアピン候補へ残す。
+        if gfcp_speed[index] > config.min_speed_mps * 1.10:
             continue
         if magnitude[index] < np.max(
             magnitude[

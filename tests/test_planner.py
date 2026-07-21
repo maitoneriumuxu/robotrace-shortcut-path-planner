@@ -129,6 +129,10 @@ class ShortcutPlannerTests(unittest.TestCase):
 
     def test_attack_speed_minimum_maximum_and_endpoints(self) -> None:
         tolerance = 2.0e-4
+        self.assertEqual(
+            self.config.gfcp_reference_speed_mps,
+            self.config.min_speed_mps,
+        )
         for evaluated in self.paths:
             with self.subTest(path=evaluated.path.label):
                 speed = evaluated.speed_mps.astype(np.float64)

@@ -15,7 +15,7 @@ class PlannerConfig:
 
     max_speed_mps: float = 13.0
     min_speed_mps: float = 3.6
-    gfcp_reference_speed_mps: float = 3.0
+    gfcp_reference_speed_mps: float = 3.6
     gfcp_exponent: float = 0.33
     min_acceleration_mps2: float = 20.0
     max_acceleration_mps2: float = 55.0
