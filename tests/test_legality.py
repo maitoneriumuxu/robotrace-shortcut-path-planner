@@ -288,7 +288,7 @@ class VehicleFootprintGateTests(unittest.TestCase):
         self.assertGreater(int(np.max(result.simultaneous_line_count)), 1)
         self.assertGreater(result.unvisited_segment_count, 0)
 
-    def test_unconfirmed_contact_witness_forces_4471_fallback(self) -> None:
+    def test_unconfirmed_contact_witness_forces_frenet_fallback(self) -> None:
         course = load_course("data/courses/normalized/2025alljapan.tsv")
         unconfirmed = replace(
             load_vehicle_footprint(),
@@ -308,7 +308,7 @@ class VehicleFootprintGateTests(unittest.TestCase):
             local.best.metrics.predicted_time_s,
             places=9,
         )
-        self.assertAlmostEqual(result.adopted.metrics.predicted_time_s, 4.4709220381, places=6)
+        self.assertAlmostEqual(result.adopted.metrics.predicted_time_s, 4.4435428465, places=6)
 
     def test_design_confirmed_reference_search_can_run(self) -> None:
         x = np.arange(0.0, 500.0 + 10.0, 10.0, dtype=np.float32)

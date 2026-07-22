@@ -132,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         output = write_deep_result_png(
             Path("outputs/deep_result.png"), course, result, config
         )
-        print(f"現在値: {result.current.metrics.predicted_time_s:.6f}s")
+        print(f"deep初期合法: {result.current.metrics.predicted_time_s:.6f}s")
         for stage in result.stage_records:
             print(
                 f"{stage.name}: anchors={stage.anchor_count}, "

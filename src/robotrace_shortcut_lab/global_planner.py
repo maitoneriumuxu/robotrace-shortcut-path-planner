@@ -1065,11 +1065,11 @@ def global_path_from_local(
     course: Course,
     comparison: Comparison,
     config: PlannerConfig,
-    label: str = "現在4.471秒経路",
+    label: str = "現在Frenet最良経路",
 ) -> GlobalPath:
     baseline = comparison.best
     # 基準経路は元から約10 mm間隔なので、再補間による曲率差を作らず
-    # 4.470922秒をそのままフォールバック値として保持する。
+    # 現在Frenet最良を大域探索のフォールバック値として保持する。
     x = baseline.path.x_mm.astype(np.float32, copy=True)
     y = baseline.path.y_mm.astype(np.float32, copy=True)
     target = cumulative_distance_m(x, y) * 1000.0

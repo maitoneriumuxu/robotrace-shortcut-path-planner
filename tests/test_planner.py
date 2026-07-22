@@ -18,6 +18,8 @@ from robotrace_shortcut_lab.model import COURSE_FILE, PlannerConfig
 from robotrace_shortcut_lab.portable import (
     LIMIT_AALP,
     acceleration_limit_from_omega,
+    gate_runup_distance_m,
+    gate_runup_start_speed_mps,
     plan_speed,
     run_comparison,
 )
@@ -127,7 +129,7 @@ class ShortcutPlannerTests(unittest.TestCase):
                     source_crossings,
                 )
 
-    def test_attack_speed_minimum_maximum_and_endpoints(self) -> None:
+    def test_attack_speed_minimum_maximum_and_gate_boundaries(self) -> None:
         tolerance = 2.0e-4
         self.assertEqual(
             self.config.gfcp_reference_speed_mps,
@@ -142,12 +144,26 @@ class ShortcutPlannerTests(unittest.TestCase):
                 self.assertLessEqual(
                     float(np.max(speed)), self.config.max_speed_mps + tolerance
                 )
-                self.assertAlmostEqual(
-                    float(speed[0]), self.config.min_speed_mps, delta=tolerance
+                start_limit = gate_runup_start_speed_mps(
+                    evaluated.path.x_mm, evaluated.path.y_mm, self.config
                 )
-                self.assertAlmostEqual(
-                    float(speed[-1]), self.config.min_speed_mps, delta=tolerance
-                )
+                self.assertLessEqual(float(speed[0]), start_limit + tolerance)
+                self.assertGreater(float(speed[0]), self.config.min_speed_mps)
+                self.assertGreater(float(speed[-1]), self.config.min_speed_mps)
+
+    def test_one_meter_gate_runup_starts_from_rest_and_finish_is_free(self) -> None:
+        x = np.linspace(0.0, 1000.0, 101, dtype=np.float32)
+        y = np.zeros_like(x)
+        self.assertAlmostEqual(gate_runup_distance_m(x, y), 1.0, places=7)
+        expected = np.sqrt(2.0 * self.config.max_acceleration_mps2)
+        self.assertAlmostEqual(
+            gate_runup_start_speed_mps(x, y, self.config), expected, places=6
+        )
+        plan = plan_speed(x, y, self.config)
+        self.assertAlmostEqual(float(plan.speed_mps[0]), expected, delta=2.0e-4)
+        self.assertAlmostEqual(
+            float(plan.speed_mps[-1]), self.config.max_speed_mps, delta=2.0e-4
+        )
 
     def test_forward_scan_obeys_omega_dependent_acceleration(self) -> None:
         tolerance = 3.0e-5

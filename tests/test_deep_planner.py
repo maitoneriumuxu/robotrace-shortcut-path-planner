@@ -111,6 +111,8 @@ class DeepReferenceTests(unittest.TestCase):
         self.assertEqual(config.min_speed_mps, 3.6)
         self.assertEqual(config.max_speed_mps, 13.0)
         self.assertEqual(config.speed_scan_iterations, 4)
+        self.assertEqual(config.gate_runup_initial_speed_mps, 0.0)
+        self.assertTrue(config.finish_speed_is_free)
         self.assertEqual(config.legal_pose_step_mm, 2.0)
         self.assertEqual(config.legal_yaw_step_deg, 1.0)
         self.assertEqual(config.contact_dp_max_progress_step_segments, 1)

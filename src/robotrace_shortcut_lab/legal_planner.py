@@ -62,7 +62,7 @@ def _fallback_evaluated(
     course: Course,
     comparison: Comparison,
     config: PlannerConfig,
-    label: str = "現在4.471秒Frenetフォールバック",
+    label: str = "現在Frenet最良フォールバック",
     candidate=None,
 ) -> EvaluatedGlobalPath:
     selected_comparison = (
@@ -244,7 +244,7 @@ def run_legal_global_mode(
         result = _unconfirmed_result(
             mode,
             fallback,
-            "接触証明部品が未確認。大域経路は採用せず4.471秒へフォールバック",
+            "接触証明部品が未確認。大域経路は採用せず現在Frenet最良へフォールバック",
         )
         return comparison, result, board_status
 

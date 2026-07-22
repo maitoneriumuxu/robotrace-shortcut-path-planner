@@ -799,9 +799,10 @@ def run_deep_reference(
     *,
     stages: tuple[DeepStageSpec, ...] = DEFAULT_DEEP_STAGES,
     budget_s: float = 1_500.0,
-    checkpoint_path: str | Path = "outputs/deep_checkpoint.npz",
-    seed_cache_path: str | Path = "outputs/deep_seed.npz",
-    resume_cache_path: str | Path = "outputs/deep_resume.npz",
+    checkpoint_path: str | Path = "outputs/deep_gate_checkpoint.npz",
+    seed_cache_path: str | Path = "outputs/deep_gate_seed.npz",
+    resume_cache_path: str | Path = "outputs/deep_gate_resume.npz",
+    robust_cache_path: str | Path = "outputs/deep_gate_robust.npz",
     progress: Callable[[str], None] | None = None,
 ) -> DeepSearchResult:
     """固定モデルと全LINE合法性のまま2025用PC品質上限を段階探索する。"""
@@ -916,6 +917,42 @@ def run_deep_reference(
                 convergence_time.append(perf_counter() - total_start)
                 convergence_best.append(resumed.metrics.predicted_time_s)
                 emit(f"deep再開候補: {resumed.metrics.predicted_time_s:.6f}s")
+    robust_cache = Path(robust_cache_path)
+    robust_warm_path = _load_seed_path(robust_cache, course)
+    robust_warm_key: bytes | None = None
+    if robust_warm_path is not None:
+        robust_warm_contact = evaluator.evaluate(
+            robust_warm_path.x_mm,
+            robust_warm_path.y_mm,
+            robust_warm_path.yaw_rad,
+            start_segment=0,
+            end_segment=course.point_count - 2,
+            compute_metrics=False,
+        )
+        if robust_warm_contact.legal:
+            robust_warm_contacted = apply_contact_progress_to_path(
+                robust_warm_path, robust_warm_contact, course
+            )
+            robust_warm = evaluate_global_path(
+                course,
+                robust_warm_contacted,
+                config,
+                comparison.original.metrics.length_m,
+                None,
+                enforce_line_rule=False,
+                detailed_interactions=False,
+                enforce_board=False,
+            )
+            if robust_warm.metrics.valid:
+                archive.append((robust_warm, robust_warm_contact))
+                robust_warm_key = (
+                    robust_warm.path.x_mm.tobytes()
+                    + robust_warm.path.y_mm.tobytes()
+                )
+                emit(
+                    "deep robust再開候補: "
+                    f"{robust_warm.metrics.predicted_time_s:.6f}s"
+                )
 
     for stage_index, spec in enumerate(stages):
         if perf_counter() >= deadline:
@@ -1205,11 +1242,14 @@ def run_deep_reference(
     ] = [(current, current_contact, current_sensitivity)]
     current_key = current.path.x_mm.tobytes() + current.path.y_mm.tobytes()
     legal_best_key = legal_best.path.x_mm.tobytes() + legal_best.path.y_mm.tobytes()
+    mandatory_detail_keys = {legal_best_key}
+    if robust_warm_key is not None:
+        mandatory_detail_keys.add(robust_warm_key)
     for evaluated, _ in ranked_archive[:12]:
         evaluated_key = evaluated.path.x_mm.tobytes() + evaluated.path.y_mm.tobytes()
         if evaluated_key == current_key:
             continue
-        if perf_counter() >= deadline and evaluated_key != legal_best_key:
+        if perf_counter() >= deadline and evaluated_key not in mandatory_detail_keys:
             break
         else:
             detailed_archive.append(
@@ -1291,6 +1331,7 @@ def run_deep_reference(
 
     total_s = perf_counter() - total_start
     _save_checkpoint(checkpoint, legal_best, stage_records, total_s)
+    _save_seed_path(robust_cache, course, robust_best.path)
     return DeepSearchResult(
         current,
         current_contact,

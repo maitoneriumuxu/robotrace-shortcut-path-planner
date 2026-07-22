@@ -296,7 +296,7 @@ def _write_unconstrained_global_result_png(
     embedded = comparison.embedded_lite.adopted
     final = comparison.final
     items = (current, reference, embedded, final)
-    labels = ("現在4.471秒経路", "reference大域", "embedded-lite", "最終採用")
+    labels = ("現在Frenet", "reference大域", "embedded-lite", "最終採用")
     colors = ("#D97706", "#059669", "#2563EB", "#BE185D")
 
     final_result = (
@@ -643,7 +643,8 @@ def _write_unconstrained_global_result_png(
     figure.text(
         0.5,
         0.012,
-        "固定速度モデル: R10=min=始端=終端3.6、max13.0 m/s、指数0.33、加速20～55、減速55 m/s²、omega 300～1500 deg/s、AALP 100、前後4反復。"
+        "固定速度モデル: R10=min3.6、max13.0m/s、指数0.33、加速20～55、減速55m/s²、omega 300～1500deg/s、AALP100、前後4反復。"
+        "始端はゴール→スタート直線助走、終端速度は自由。"
         "予測値は実走性能・競技上の適合・安全を保証しません。",
         ha="center",
         va="bottom",
@@ -858,7 +859,7 @@ def write_global_result_png(
         color="#D97706",
         linewidth=1.1,
         linestyle="--",
-        label="現在4.471秒",
+        label="現在Frenet",
         zorder=3,
     )
     zoom_axis.plot(
@@ -1174,7 +1175,7 @@ def write_global_result_png(
             0.5,
             0.47,
             "実接触segment・重なり面積・接触余裕・同時接触数は\n"
-            "横バー確認まで計算しない。最終は4.471秒へフォールバック。",
+            "横バー確認まで計算しない。最終は現在Frenet最良へフォールバック。",
             ha="center",
             va="center",
             fontsize=11,
@@ -1237,7 +1238,8 @@ def write_global_result_png(
     figure.text(
         0.5,
         0.012,
-        "固定ATTACKモデル: R10=min=始端=終端=3.6m/s、max=13.0m/s、加速20～55、減速55m/s²、omega 300～1500deg/s、AALP 100、前後4反復。"
+        "固定ATTACKモデル: R10=min3.6m/s、max13.0m/s、加速20～55、減速55m/s²、omega 300～1500deg/s、AALP100、前後4反復。"
+        "始端はゴール→スタート直線助走、終端速度は自由。"
         "白線接触=設計承認200mm横バー、全LINE segmentを順番に通過、板外=半径125mm円。"
         "as-built未確認のため実車確認済みとは扱わない。",
         ha="center",
@@ -1299,7 +1301,7 @@ def write_deep_result_png(
         result.robust_sensitivity,
         None,
     )
-    labels = ("現在4.403810秒", "deep legal最速", "deep robust最速", "legal幾何下限")
+    labels = ("deep初期合法", "deep legal最速", "deep robust最速", "legal幾何下限")
     colors = ("#D97706", "#BE185D", "#2563EB", "#4B5563")
     styles = ("--", "-", "-.", ":")
 
@@ -1333,6 +1335,9 @@ def write_deep_result_png(
         "予測時間 [s]",
         "4秒との差 [s]",
         "現在との差 [s]",
+        "助走距離 [m]",
+        "スタート速度 [m/s]",
+        "ゴール速度 [m/s]",
         "経路長 [m]",
         "採用辺数",
         "白線完全離脱",
@@ -1357,6 +1362,9 @@ def write_deep_result_png(
                 f"{metrics.predicted_time_s:.6f}",
                 f"{metrics.predicted_time_s - 4.0:+.6f}",
                 f"{metrics.predicted_time_s - current_time:+.6f}",
+                f"{np.hypot(item.path.x_mm[0] - item.path.x_mm[-1], item.path.y_mm[0] - item.path.y_mm[-1]) * 0.001:.3f}",
+                f"{item.speed_mps[0]:.3f}",
+                f"{item.speed_mps[-1]:.3f}",
                 f"{metrics.length_m:.6f}",
                 str(metrics.shortcut_edge_count),
                 str(contact.detachment_count),
@@ -1379,7 +1387,7 @@ def write_deep_result_png(
     ]
     table = table_axis.table(
         cellText=cells,
-        colLabels=("評価項目", "現在", "legal最速", "robust最速", "legal下限"),
+        colLabels=("評価項目", "初期legal", "legal最速", "robust最速", "legal下限"),
         cellLoc="right",
         colLoc="center",
         bbox=(0.0, 0.02, 1.0, 0.94),
@@ -1512,7 +1520,8 @@ def write_deep_result_png(
         0.5,
         0.010,
         "固定条件: 10×200mm横バー、全LINE segment順次通過、完全離脱0、2mm/1deg中間姿勢、実接触DP、板内。"
-        " R10=min=始終端3.6、max13m/s、加速20～55、減速55、omega 300～1500deg/s、AALP100、前後4反復。"
+        " R10=min3.6、max13m/s、加速20～55、減速55、omega 300～1500deg/s、AALP100、前後4反復。"
+        " ゴール→スタート直線を静止から助走（計時外）、ゴール速度自由。"
         " 設計上の予測であり、as-built・実走・競技適合を保証しません。",
         ha="center",
         va="bottom",

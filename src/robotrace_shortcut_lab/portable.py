@@ -471,6 +471,35 @@ def _aalp_limit_mps(
     )
 
 
+def gate_runup_distance_m(x_mm: np.ndarray, y_mm: np.ndarray) -> float:
+    """ゴールラインからスタートラインまでの直線助走距離を返す。"""
+
+    if x_mm.size < 2 or y_mm.size < 2:
+        return 0.0
+    return float(
+        np.hypot(
+            float(x_mm[0]) - float(x_mm[-1]),
+            float(y_mm[0]) - float(y_mm[-1]),
+        )
+        * 0.001
+    )
+
+
+def gate_runup_start_speed_mps(
+    x_mm: np.ndarray,
+    y_mm: np.ndarray,
+    config: PlannerConfig,
+) -> float:
+    """静止配置から計時外の直線助走で到達できるスタート通過速度。"""
+
+    distance_m = gate_runup_distance_m(x_mm, y_mm)
+    reachable = np.sqrt(
+        config.gate_runup_initial_speed_mps**2
+        + 2.0 * config.max_acceleration_mps2 * distance_m
+    )
+    return float(np.clip(reachable, config.min_speed_mps, config.max_speed_mps))
+
+
 def plan_speed(
     x_mm: np.ndarray,
     y_mm: np.ndarray,
@@ -511,8 +540,10 @@ def plan_speed(
         )
     )
     speed = np.clip(base_limit, config.min_speed_mps, config.max_speed_mps)
-    speed[0] = config.min_speed_mps
-    speed[-1] = config.min_speed_mps
+    start_speed_limit = gate_runup_start_speed_mps(x_mm, y_mm, config)
+    speed[0] = min(speed[0], start_speed_limit)
+    if not config.finish_speed_is_free:
+        speed[-1] = config.min_speed_mps
 
     acceleration_limit = np.full_like(speed, config.max_acceleration_mps2)
     deceleration = config.deceleration_mps2 / config.break_kp
@@ -553,7 +584,7 @@ def plan_speed(
     for index in range(speed.size):
         if speed[index] >= base_limit[index] - tolerance:
             continue
-        acceleration_bound = np.inf
+        acceleration_bound = start_speed_limit if index == 0 else np.inf
         deceleration_bound = np.inf
         if index > 0:
             segment_acceleration = min(

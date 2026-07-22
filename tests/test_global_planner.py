@@ -63,13 +63,15 @@ class GlobalPlanner2025Tests(unittest.TestCase):
         self.assertEqual(config.max_aalp_deg_s_per_ms, 100.0)
         self.assertEqual(config.search_run_speed_mps, 3.6)
         self.assertEqual(config.speed_scan_iterations, 4)
+        self.assertEqual(config.gate_runup_initial_speed_mps, 0.0)
+        self.assertTrue(config.finish_speed_is_free)
         self.assertGreater(config.legal_crossing_risk_penalty_s, 0.0)
         self.assertGreater(config.legal_shallow_crossing_risk_penalty_s, 0.0)
 
-    def test_current_4471_second_baseline_is_reproduced(self) -> None:
+    def test_current_frenet_baseline_with_gate_runup_is_reproduced(self) -> None:
         self.assertAlmostEqual(
             self.global_comparison.current_baseline.metrics.predicted_time_s,
-            4.4709220381,
+            4.4435428465,
             places=6,
         )
 
@@ -83,7 +85,7 @@ class GlobalPlanner2025Tests(unittest.TestCase):
             self.global_comparison.final.path.selected_edges,
         )
 
-    def test_all_line_reference_improves_4471_without_as_built_claim(self) -> None:
+    def test_all_line_reference_improves_frenet_without_as_built_claim(self) -> None:
         reference = self.global_comparison.reference
         self.assertTrue(reference.legal)
         self.assertFalse(reference.fallback_used)

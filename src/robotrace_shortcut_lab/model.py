@@ -25,6 +25,10 @@ class PlannerConfig:
     min_acceleration_omega_deg_s: float = 1500.0
     jerk_mps3: float = 3.0
     speed_scan_iterations: int = 4
+    # 計時前はゴールライン付近からスタートラインまでの直線を助走する。
+    # 距離は経路終点（ゴール）と始点（スタート）の実座標差から求める。
+    gate_runup_initial_speed_mps: float = 0.0
+    finish_speed_is_free: bool = True
     search_run_speed_mps: float = 3.6
     max_aalp_deg_s_per_ms: float = 100.0
     firmware_sample_s: float = 0.001
