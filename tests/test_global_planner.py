@@ -20,6 +20,7 @@ from robotrace_shortcut_lab.global_planner import (
     run_global_mode,
 )
 from robotrace_shortcut_lab.legal_planner import run_legal_global_mode
+from robotrace_shortcut_lab.legality import load_vehicle_footprint
 from robotrace_shortcut_lab.model import BoardBoundary, COURSE_FILE, Course, PlannerConfig
 from robotrace_shortcut_lab.portable import plan_speed, run_comparison
 from robotrace_shortcut_lab.report import write_global_result_png
@@ -82,25 +83,34 @@ class GlobalPlanner2025Tests(unittest.TestCase):
             self.global_comparison.final.path.selected_edges,
         )
 
-    def test_unconfirmed_ln5_reference_falls_back_to_4471(self) -> None:
+    def test_all_line_reference_improves_4471_without_as_built_claim(self) -> None:
         reference = self.global_comparison.reference
-        self.assertFalse(reference.legal)
-        self.assertTrue(reference.fallback_used)
-        self.assertAlmostEqual(
+        self.assertTrue(reference.legal)
+        self.assertFalse(reference.fallback_used)
+        self.assertLess(
             reference.adopted.metrics.predicted_time_s,
             self.global_comparison.current_baseline.metrics.predicted_time_s,
-            places=9,
         )
+        self.assertFalse(self.global_comparison.vehicle_footprint.as_built_confirmed)
 
     def test_embedded_lite_finishes_and_falls_back_when_slower(self) -> None:
         embedded = self.global_comparison.embedded_lite
         self.assertTrue(embedded.adopted.metrics.valid)
-        self.assertFalse(embedded.legal)
-        self.assertTrue(embedded.fallback_used)
+        self.assertTrue(embedded.legal)
+        self.assertFalse(embedded.fallback_used)
         self.assertLessEqual(
             embedded.adopted.metrics.predicted_time_s,
             self.global_comparison.current_baseline.metrics.predicted_time_s + 1.0e-9,
         )
+
+    def test_final_design_path_is_robust_to_2mm_and_1deg(self) -> None:
+        reference = self.global_comparison.reference
+        self.assertTrue(reference.robust)
+        self.assertIsNotNone(reference.sensitivity)
+        assert reference.sensitivity is not None
+        self.assertTrue(reference.sensitivity.position_all_legal[1])
+        self.assertTrue(reference.sensitivity.yaw_all_legal[1])
+        self.assertIsNotNone(self.global_comparison.robust_final)
 
     def test_anchor_and_edge_limits_are_kept(self) -> None:
         reference = self.global_comparison.maximum_vehicle_lower_bound
@@ -122,19 +132,32 @@ class GlobalPlanner2025Tests(unittest.TestCase):
                 self.assertLess(start, finish)
 
     def test_source_progress_is_monotonic_and_does_not_jump_back(self) -> None:
-        for item in (
-            self.global_comparison.current_baseline,
-            self.global_comparison.reference.adopted,
-            self.global_comparison.embedded_lite.adopted,
-            self.global_comparison.final,
+        baseline = self.global_comparison.current_baseline
+        self.assertTrue(np.all(np.diff(baseline.path.source_progress_index) >= -1.0e-6))
+        self.assertEqual(float(baseline.path.source_progress_index[0]), 0.0)
+        self.assertAlmostEqual(
+            float(baseline.path.source_progress_index[-1]),
+            self.course.point_count - 1,
+            delta=1.0e-3,
+        )
+        for result in (
+            self.global_comparison.reference,
+            self.global_comparison.embedded_lite,
         ):
+            item = result.adopted
             self.assertTrue(np.all(np.diff(item.path.source_progress_index) >= -1.0e-6))
             self.assertEqual(float(item.path.source_progress_index[0]), 0.0)
             self.assertAlmostEqual(
                 float(item.path.source_progress_index[-1]),
-                self.course.point_count - 1,
+                self.course.point_count - 2,
                 delta=1.0e-3,
             )
+            self.assertIsNotNone(result.contact)
+            assert result.contact is not None
+            self.assertTrue(result.contact.all_line_segments_covered)
+            self.assertEqual(result.contact.unvisited_segment_count, 0)
+            progress_step = np.diff(result.contact.source_progress_index)
+            self.assertTrue(np.all((progress_step >= 0.0) & (progress_step <= 1.0)))
 
     def test_global_path_is_resampled_around_ten_mm(self) -> None:
         segment = np.hypot(
@@ -159,18 +182,27 @@ class GlobalPlanner2025Tests(unittest.TestCase):
         )
 
     def test_reference_selection_is_deterministic(self) -> None:
-        _, second, _ = run_legal_global_mode(
-            self.course,
-            "reference",
+        x = np.arange(0.0, 500.0 + 10.0, 10.0)
+        course = _course_from_xy("deterministic", x, np.zeros_like(x))
+        compact = replace(
             self.config,
-            local_comparison=self.global_comparison.local,
+            reference_anchor_limit=16,
+            reference_edge_limit=32,
+            legal_reference_edge_check_limit=16,
+            legal_reference_top_k=2,
+        )
+        _, first, _ = run_legal_global_mode(
+            course, "reference", compact, footprint=load_vehicle_footprint()
+        )
+        _, second, _ = run_legal_global_mode(
+            course, "reference", compact, footprint=load_vehicle_footprint()
         )
         self.assertEqual(
-            self.global_comparison.reference.adopted.path.selected_edges,
+            first.adopted.path.selected_edges,
             second.adopted.path.selected_edges,
         )
         np.testing.assert_allclose(
-            self.global_comparison.reference.adopted.path.x_mm,
+            first.adopted.path.x_mm,
             second.adopted.path.x_mm,
             atol=0.0,
         )

@@ -1,14 +1,21 @@
 {
-  "format": "robotrace-vehicle-footprint-v1",
+  "format": "robotrace-vehicle-footprint-v2",
   "vehicle_id": "LN5",
-  "polygon_vertices_mm": [],
-  "polygon_components_mm": [],
-  "origin_definition": "未設定。実車の追従制御で使う車体中心原点と外形図の対応を要確認",
-  "front_mm": null,
-  "rear_mm": null,
-  "left_mm": null,
-  "right_mm": null,
+  "origin_definition": "経路位置と一致する車体原点。+X=車体前方、+Y=車体左方",
+  "full_footprint_components_mm": [],
+  "contact_witness_components_mm": [
+    [
+      [-5.0, -100.0],
+      [5.0, -100.0],
+      [5.0, 100.0],
+      [-5.0, 100.0]
+    ]
+  ],
+  "full_footprint_source": "未確認。実車製作後にタイヤ、基板、モータ、吸引機構を含む床面投影を実測する",
+  "contact_witness_source": "user-approved planned transverse contact bar, 2026-07-22",
+  "design_confirmed": true,
+  "as_built_confirmed": false,
+  "board_clearance_radius_mm": 125.0,
   "safety_margin_mm": 0.0,
-  "source": "LN5.xx_GitHub ea220f3e74af854d227918b71ed3617ff3172a2d と同一OneDrive内に床面投影CAD・外形図・実測寸法を確認できず。docs/ai/robotrace-shortcut.mdも実車体幅の実測を未決定事項としている",
-  "confirmed": false
+  "source": "user-approved planned transverse contact bar, 2026-07-22"
 }

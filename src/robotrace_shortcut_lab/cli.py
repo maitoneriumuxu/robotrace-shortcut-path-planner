@@ -42,7 +42,7 @@ def _run_all_courses(mode: str, config: PlannerConfig) -> int:
         try:
             course = load_course(course_path)
             local, global_result, board_status = run_legal_global_mode(
-                course, mode, config
+                course, mode, config, evaluate_robust=False
             )
             baseline_time = local.best.metrics.predicted_time_s
             selected = global_result.adopted
@@ -50,7 +50,13 @@ def _run_all_courses(mode: str, config: PlannerConfig) -> int:
             fallback = global_result.fallback_used
             status = "フォールバック" if fallback else "改善"
             if not global_result.legal:
-                status += "・LN5実車外形未設定"
+                status += "・設計legal経路なし"
+            elif global_result.sensitivity is None:
+                status += "・全LINE通過legal（robust未評価）"
+            elif not global_result.robust:
+                status += "・設計legal（robust警告）"
+            else:
+                status += "・設計legal/robust"
             if board_status == "板境界未確認":
                 status += "・板境界未確認"
             if not selected.metrics.valid:
@@ -89,7 +95,12 @@ def _run_all_courses(mode: str, config: PlannerConfig) -> int:
             f"{result.status}, {result.total_s:.2f}s"
         )
     output = write_all_courses_png(Path("outputs/all_courses.png"), results)
-    improved = sum(item.improvement_s < -1.0e-6 and item.valid for item in results)
+    improved = sum(
+        item.improvement_s < -1.0e-6
+        and item.valid
+        and not item.fallback_used
+        for item in results
+    )
     fallback = sum(item.fallback_used and item.valid for item in results)
     invalid = sum(not item.valid for item in results)
     print(f"改善={improved}, フォールバック={fallback}, 不合格={invalid}")
@@ -141,5 +152,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(comparison.board_status)
     print(comparison.footprint_status)
+    if comparison.robust_final is not None:
+        print(
+            f"robust最良: {comparison.robust_final.metrics.predicted_time_s:.3f}s"
+        )
+    print(
+        "contact witness: 10x200mm横バー, design_confirmed="
+        f"{comparison.vehicle_footprint.design_confirmed}, as_built_confirmed="
+        f"{comparison.vehicle_footprint.as_built_confirmed}"
+    )
+    final_contact = (
+        comparison.reference.contact
+        if comparison.final.path.selected_edges
+        == comparison.reference.adopted.path.selected_edges
+        else comparison.embedded_lite.contact
+    )
+    if final_contact is not None:
+        print(
+            "全LINE通過: "
+            f"{final_contact.all_line_segments_covered}, "
+            f"未通過segment={final_contact.unvisited_segment_count}"
+        )
     print(output.resolve())
     return 0

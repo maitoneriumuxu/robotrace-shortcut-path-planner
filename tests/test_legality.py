@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -42,15 +43,16 @@ def _confirmed_rectangle(half_length: float = 20.0, half_width: float = 20.0):
         dtype=np.float32,
     )
     return VehicleFootprint(
-        (vertices,),
-        "試験用: 原点は中心、+X前方、+Y左方",
-        half_length,
-        half_length,
-        half_width,
-        half_width,
-        0.0,
-        "合成テスト外形",
-        True,
+        full_footprint_components_mm=(vertices,),
+        contact_witness_components_mm=(vertices,),
+        origin_definition="試験用: 原点は中心、+X前方、+Y左方",
+        board_clearance_radius_mm=125.0,
+        safety_margin_mm=0.0,
+        source="合成テスト外形",
+        full_footprint_source="合成テスト",
+        contact_witness_source="合成テスト",
+        design_confirmed=True,
+        as_built_confirmed=True,
     )
 
 
@@ -74,7 +76,7 @@ class SweptFootprintLegalityTests(unittest.TestCase):
         self.assertGreaterEqual(result.detachment_count, 1)
         self.assertIn("白線完全離脱", result.violation)
 
-    def test_nearby_line_transfer_with_simultaneous_contact_is_legal(self) -> None:
+    def test_nearby_line_transfer_is_illegal_when_intermediate_lines_are_skipped(self) -> None:
         course = _course_from_xy(
             [0.0, 200.0, 500.0, 500.0, 200.0, 0.0],
             [0.0, 0.0, 0.0, 30.0, 30.0, 30.0],
@@ -87,23 +89,12 @@ class SweptFootprintLegalityTests(unittest.TestCase):
             start_segment=0,
             end_segment=4,
         )
-        self.assertTrue(result.legal, result.violation)
+        self.assertFalse(result.legal)
         self.assertEqual(result.detachment_count, 0)
         self.assertGreaterEqual(int(np.max(result.simultaneous_line_count)), 2)
-        self.assertGreaterEqual(result.line_switch_count, 1)
-        self.assertGreaterEqual(
-            int(np.max(result.future_contact_count + result.past_contact_count)), 1
-        )
-        self.assertTrue(
-            all(
-                int(selected) in segments
-                for selected, segments in zip(
-                    result.source_progress_index,
-                    result.contact_segments,
-                    strict=True,
-                )
-            )
-        )
+        self.assertFalse(result.all_line_segments_covered)
+        self.assertGreater(result.unvisited_segment_count, 0)
+        self.assertIn("未通過LINE", result.violation)
 
     def test_intermediate_detachment_is_detected_between_legal_endpoints(self) -> None:
         course = _course_from_xy(
@@ -121,17 +112,71 @@ class SweptFootprintLegalityTests(unittest.TestCase):
         self.assertTrue(any(not segments for segments in result.contact_segments[1:-1]))
         self.assertLessEqual(float(np.max(np.diff(result.pose_distance_mm))), 2.001)
 
-    def test_crossing_dp_selects_monotonic_contact_sequence(self) -> None:
+    def test_crossing_dp_rejects_simultaneous_future_line_jump(self) -> None:
         progress = solve_contact_progress(
             ((0,), (0, 10), (10,), (10, 11)),
             self.config,
             start_segment=0,
             end_segment=11,
         )
+        self.assertIsNone(progress)
+
+    def test_all_line_radial_prefilter_rejects_unreachable_middle_segment(self) -> None:
+        course = _course_from_xy(
+            [0.0, 300.0, 300.0, 0.0],
+            [0.0, 0.0, 300.0, 300.0],
+        )
+        evaluator = WhiteLineContactEvaluator(course, self.footprint, self.config)
+        unreachable = evaluator.count_radially_unreachable_segments(
+            np.array([50.0, 50.0], dtype=np.float32),
+            np.array([0.0, 300.0], dtype=np.float32),
+            0,
+            2,
+        )
+        self.assertGreater(unreachable, 0)
+
+    def test_contact_dp_accepts_every_line_segment_in_order(self) -> None:
+        progress = solve_contact_progress(
+            ((0,), (0, 1), (1, 2), (2, 3), (3,)),
+            self.config,
+            start_segment=0,
+            end_segment=3,
+        )
         self.assertIsNotNone(progress)
         assert progress is not None
-        np.testing.assert_array_equal(progress, np.array([0, 10, 10, 11]))
-        self.assertTrue(np.all(np.diff(progress) >= 0.0))
+        self.assertEqual(float(progress[0]), 0.0)
+        self.assertEqual(float(progress[-1]), 3.0)
+        self.assertTrue(np.all((np.diff(progress) >= 0.0) & (np.diff(progress) <= 1.0)))
+
+    def test_straight_path_reports_every_required_line_segment_covered(self) -> None:
+        course = _course_from_xy(
+            [0.0, 25.0, 50.0, 75.0, 100.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        evaluator = WhiteLineContactEvaluator(course, self.footprint, self.config)
+        result = evaluator.evaluate(
+            course.x_mm,
+            course.y_mm,
+            np.zeros(course.point_count, dtype=np.float32),
+            start_segment=0,
+            end_segment=course.point_count - 2,
+        )
+        self.assertTrue(result.legal, result.violation)
+        self.assertTrue(result.all_line_segments_covered)
+        self.assertEqual(result.unvisited_segment_count, 0)
+
+    def test_contact_dp_can_advance_over_dense_segments_only_when_all_are_contacted(self) -> None:
+        progress = solve_contact_progress(
+            ((0,), (0, 1, 2, 3, 4), (4,)),
+            self.config,
+            start_segment=0,
+            end_segment=4,
+        )
+        self.assertIsNotNone(progress)
+        assert progress is not None
+        self.assertEqual(float(progress[0]), 0.0)
+        self.assertEqual(float(progress[-1]), 4.0)
+        self.assertGreater(float(np.max(np.diff(progress))), 1.0)
 
     def test_contact_dp_rejects_return_to_past_line(self) -> None:
         progress = solve_contact_progress(((10,), (9,)), self.config)
@@ -170,21 +215,91 @@ class SweptFootprintLegalityTests(unittest.TestCase):
         self.assertFalse(result.legal)
         self.assertIn("板外", result.violation)
 
+    def test_contact_does_not_use_125mm_board_circle(self) -> None:
+        course = _course_from_xy([0.0, 300.0], [0.0, 0.0])
+        evaluator = WhiteLineContactEvaluator(course, self.footprint, self.config)
+        result = evaluator.evaluate(
+            np.array([50.0, 250.0], dtype=np.float32),
+            np.array([80.0, 80.0], dtype=np.float32),
+            np.array([0.0, 0.0], dtype=np.float32),
+        )
+        self.assertFalse(result.legal)
+        self.assertGreater(result.detachment_count, 0)
+
 
 class VehicleFootprintGateTests(unittest.TestCase):
-    def test_unconfirmed_or_missing_footprint_is_not_confirmed(self) -> None:
-        self.assertFalse(load_vehicle_footprint().confirmed)
+    def test_transverse_bar_is_loaded_with_separate_confirmation_states(self) -> None:
+        footprint = load_vehicle_footprint()
+        self.assertTrue(footprint.design_confirmed)
+        self.assertFalse(footprint.as_built_confirmed)
+        self.assertFalse(footprint.full_footprint_components_mm)
+        self.assertEqual(len(footprint.contact_witness_components_mm), 1)
+        vertices = footprint.contact_witness_components_mm[0]
+        self.assertEqual(float(np.min(vertices[:, 1])), -100.0)
+        self.assertEqual(float(np.max(vertices[:, 1])), 100.0)
+        self.assertLessEqual(float(np.max(np.hypot(vertices[:, 0], vertices[:, 1]))), 125.0)
+        self.assertEqual(footprint.board_clearance_radius_mm, 125.0)
+
+    def test_transverse_bar_is_centered_at_origin_and_ten_mm_thick(self) -> None:
+        vertices = load_vehicle_footprint().contact_witness_components_mm[0]
+        self.assertEqual(float(np.min(vertices[:, 0])), -5.0)
+        self.assertEqual(float(np.max(vertices[:, 0])), 5.0)
+        np.testing.assert_allclose(np.mean(vertices, axis=0), np.zeros(2), atol=0.0)
+
+    def test_board_clearance_radius_does_not_change_white_line_contact(self) -> None:
+        course = _course_from_xy([0.0, 100.0], [0.0, 0.0])
+        footprint = load_vehicle_footprint()
+        path_x = np.array([0.0, 100.0], dtype=np.float32)
+        path_y = np.zeros(2, dtype=np.float32)
+        yaw = np.zeros(2, dtype=np.float32)
+        normal = WhiteLineContactEvaluator(course, footprint, PlannerConfig()).evaluate(
+            path_x, path_y, yaw, start_segment=0, end_segment=0
+        )
+        huge_circle = WhiteLineContactEvaluator(
+            course,
+            replace(footprint, board_clearance_radius_mm=10_000.0),
+            PlannerConfig(),
+        ).evaluate(path_x, path_y, yaw, start_segment=0, end_segment=0)
+        self.assertEqual(normal.legal, huge_circle.legal)
+        self.assertEqual(normal.contact_segments, huge_circle.contact_segments)
+
+    def test_missing_footprint_is_not_design_confirmed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             self.assertFalse(
-                load_vehicle_footprint(Path(temp_dir) / "missing.json").confirmed
+                load_vehicle_footprint(Path(temp_dir) / "missing.json").design_confirmed
             )
 
-    def test_unconfirmed_footprint_forces_4471_fallback(self) -> None:
+    def test_200mm_bar_detects_simultaneous_contact_but_not_skipped_line_legality(self) -> None:
+        course = _course_from_xy(
+            [0.0, 300.0, 300.0, 0.0],
+            [0.0, 0.0, 180.0, 180.0],
+        )
+        evaluator = WhiteLineContactEvaluator(
+            course, load_vehicle_footprint(), PlannerConfig()
+        )
+        result = evaluator.evaluate(
+            np.array([100.0, 100.0], dtype=np.float32),
+            np.array([0.0, 180.0], dtype=np.float32),
+            np.array([0.0, 0.0], dtype=np.float32),
+            start_segment=0,
+            end_segment=2,
+        )
+        self.assertFalse(result.legal)
+        self.assertGreater(int(np.max(result.simultaneous_line_count)), 1)
+        self.assertGreater(result.unvisited_segment_count, 0)
+
+    def test_unconfirmed_contact_witness_forces_4471_fallback(self) -> None:
         course = load_course("data/courses/normalized/2025alljapan.tsv")
+        unconfirmed = replace(
+            load_vehicle_footprint(),
+            contact_witness_components_mm=(),
+            design_confirmed=False,
+        )
         local, result, _ = run_legal_global_mode(
             course,
             "embedded-lite",
             PlannerConfig(),
+            footprint=unconfirmed,
         )
         self.assertFalse(result.legal)
         self.assertTrue(result.fallback_used)
@@ -194,6 +309,43 @@ class VehicleFootprintGateTests(unittest.TestCase):
             places=9,
         )
         self.assertAlmostEqual(result.adopted.metrics.predicted_time_s, 4.4709220381, places=6)
+
+    def test_design_confirmed_reference_search_can_run(self) -> None:
+        x = np.arange(0.0, 500.0 + 10.0, 10.0, dtype=np.float32)
+        course = _course_from_xy(x.tolist(), np.zeros_like(x).tolist())
+        compact = replace(
+            PlannerConfig(),
+            reference_anchor_limit=16,
+            reference_edge_limit=32,
+            legal_reference_edge_check_limit=16,
+            legal_reference_top_k=2,
+        )
+        _, result, _ = run_legal_global_mode(
+            course,
+            "reference",
+            compact,
+            footprint=load_vehicle_footprint(),
+        )
+        self.assertTrue(result.legal)
+        self.assertIn("設計上合法", result.legality_status)
+
+    def test_as_built_false_is_never_reported_as_confirmed(self) -> None:
+        x = np.arange(0.0, 500.0 + 10.0, 10.0, dtype=np.float32)
+        course = _course_from_xy(x.tolist(), np.zeros_like(x).tolist())
+        compact = replace(
+            PlannerConfig(),
+            embedded_anchor_limit=12,
+            embedded_edge_limit=16,
+            legal_embedded_edge_check_limit=8,
+            embedded_top_k=2,
+        )
+        _, result, _ = run_legal_global_mode(
+            course,
+            "embedded-lite",
+            compact,
+            footprint=load_vehicle_footprint(),
+        )
+        self.assertNotIn("実車確認済み", result.legality_status)
 
 
 if __name__ == "__main__":

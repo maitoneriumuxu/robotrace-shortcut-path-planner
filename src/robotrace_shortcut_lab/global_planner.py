@@ -714,6 +714,7 @@ def _make_edges(
     boundary: BoardBoundary | None,
     *,
     apply_theoretical_line_tube: bool = True,
+    prefilter_line_radius_mm: float | None = None,
 ) -> tuple[list[_ShortcutEdge], float, int]:
     start_time = perf_counter()
     baseline = comparison.best.path
@@ -724,7 +725,11 @@ def _make_edges(
     line_tube = _LineTubeGrid(
         course.x_mm,
         course.y_mm,
-        config.rule_max_robot_radius_mm + config.rule_line_half_width_mm,
+        (
+            prefilter_line_radius_mm
+            if prefilter_line_radius_mm is not None
+            else config.rule_max_robot_radius_mm + config.rule_line_half_width_mm
+        ),
     )
     source_index = _PolylineIndex(course.x_mm, course.y_mm)
     max_skip_mm = (
@@ -807,7 +812,7 @@ def _make_edges(
                 ).astype(np.float32)
                 line_valid = (
                     line_tube.contains_path(x, y)
-                    if apply_theoretical_line_tube
+                    if apply_theoretical_line_tube or prefilter_line_radius_mm is not None
                     else True
                 )
                 crossing_count = 0

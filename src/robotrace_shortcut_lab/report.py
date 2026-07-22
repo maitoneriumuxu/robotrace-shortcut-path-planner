@@ -282,6 +282,18 @@ def _write_unconstrained_global_result_png(
     labels = ("現在4.471秒経路", "reference大域", "embedded-lite", "最終採用")
     colors = ("#D97706", "#059669", "#2563EB", "#BE185D")
 
+    final_result = (
+        reference_result
+        if reference_result.legal
+        and final.path.selected_edges == reference.path.selected_edges
+        else embedded_result
+        if embedded_result.legal
+        and final.path.selected_edges == embedded.path.selected_edges
+        else None
+    )
+    final_contact = final_result.contact if final_result is not None else None
+    final_sensitivity = final_result.sensitivity if final_result is not None else None
+
     figure = plt.figure(figsize=(20, 12), dpi=150, facecolor="white")
     grid = figure.add_gridspec(
         2,
@@ -675,6 +687,17 @@ def write_global_result_png(
     reference = reference_result.adopted
     embedded = embedded_result.adopted
     final = comparison.final
+    final_result = (
+        reference_result
+        if reference_result.legal
+        and final.path.selected_edges == reference.path.selected_edges
+        else embedded_result
+        if embedded_result.legal
+        and final.path.selected_edges == embedded.path.selected_edges
+        else None
+    )
+    final_contact = final_result.contact if final_result is not None else None
+    final_sensitivity = final_result.sensitivity if final_result is not None else None
 
     figure = plt.figure(figsize=(20, 12), dpi=150, facecolor="white")
     grid = figure.add_gridspec(
@@ -722,7 +745,10 @@ def write_global_result_png(
         color="#059669",
         linewidth=1.0,
         linestyle=":",
-        label=f"LN5合法reference {reference.metrics.predicted_time_s:.3f}s",
+        label=(
+            f"200mmバー全LINE通過 reference {reference.metrics.predicted_time_s:.3f}s"
+            + ("（既存へfallback）" if reference_result.fallback_used else "")
+        ),
         zorder=2,
     )
     map_axis.plot(
@@ -731,7 +757,10 @@ def write_global_result_png(
         color="#2563EB",
         linewidth=1.0,
         linestyle="-.",
-        label=f"embedded-lite {embedded.metrics.predicted_time_s:.3f}s",
+        label=(
+            f"embedded-lite {embedded.metrics.predicted_time_s:.3f}s"
+            + ("（既存へfallback）" if embedded_result.fallback_used else "")
+        ),
         zorder=2,
     )
     map_axis.plot(
@@ -739,7 +768,7 @@ def write_global_result_png(
         final.path.y_mm,
         color="#BE185D",
         linewidth=1.55,
-        label=f"最終採用 {final.metrics.predicted_time_s:.3f}s",
+        label=f"設計上最終候補 {final.metrics.predicted_time_s:.3f}s",
         zorder=5,
     )
     theoretical_shortcut = theoretical.path.shortcut_edge_id > 0
@@ -752,16 +781,36 @@ def write_global_result_png(
             label="競技無効ショートカット",
             zorder=6,
         )
-    map_axis.set_title("2025年全日本 ― LN5実車合法性ゲート", fontsize=13)
+    if final_contact is not None:
+        map_sample_distance = np.arange(
+            0.0, float(final_contact.pose_distance_mm[-1]) + 1.0, 1000.0
+        )
+        map_sample_indices = np.clip(
+            np.searchsorted(final_contact.pose_distance_mm, map_sample_distance),
+            0,
+            final_contact.pose_x_mm.size - 1,
+        )
+        for pose_index in map_sample_indices:
+            _draw_vehicle_outline(
+                map_axis,
+                comparison.vehicle_footprint.contact_witness_components_mm,
+                float(final_contact.pose_x_mm[pose_index]),
+                float(final_contact.pose_y_mm[pose_index]),
+                float(final_contact.pose_yaw_rad[pose_index]),
+                color="#059669",
+                alpha=0.14,
+            )
+    map_axis.set_title("2025年全日本 ― 200mm横バー＋全LINE通過", fontsize=13)
     map_axis.set_xlabel("X [mm]")
     map_axis.set_ylabel("Y [mm]")
     map_axis.set_aspect("equal", adjustable="box")
     map_axis.grid(True, color="#D1D5DB", linewidth=0.5, alpha=0.65)
     map_axis.legend(loc="upper right", fontsize=6.6, framealpha=0.94)
 
-    if theoretical.path.selected_edges:
+    focus_path = final if final.path.selected_edges else theoretical
+    if focus_path.path.selected_edges:
         _, start_index, end_index, kind = max(
-            theoretical.path.selected_edges,
+            focus_path.path.selected_edges,
             key=lambda edge: edge[2] - edge[1],
         )
     else:
@@ -783,7 +832,7 @@ def write_global_result_png(
         color="#6B7280",
         linewidth=0.8,
         linestyle=":",
-        label="飛ばした元コース",
+        label="ショートカット元コース",
         zorder=2,
     )
     zoom_axis.plot(
@@ -794,6 +843,14 @@ def write_global_result_png(
         linestyle="--",
         label="現在4.471秒",
         zorder=3,
+    )
+    zoom_axis.plot(
+        final.path.x_mm,
+        final.path.y_mm,
+        color="#BE185D",
+        linewidth=1.6,
+        label=f"設計legal {final.metrics.predicted_time_s:.3f}s",
+        zorder=5,
     )
     if np.any(theoretical_shortcut):
         zoom_axis.plot(
@@ -814,19 +871,10 @@ def write_global_result_png(
         [entry_y, exit_y],
         s=30,
         color=("#111827", "#BE185D"),
-        label="理論下限の入口・出口",
+        label="最大短縮辺の入口・出口",
         zorder=8,
     )
-    if comparison.vehicle_footprint.confirmed:
-        final_contact = (
-            reference_result.contact
-            if reference_result.legal
-            and final.path.selected_edges == reference.path.selected_edges
-            else embedded_result.contact
-            if embedded_result.legal
-            and final.path.selected_edges == embedded.path.selected_edges
-            else None
-        )
+    if comparison.vehicle_footprint.design_confirmed:
         if final_contact is not None:
             sample_distance = np.arange(
                 0.0,
@@ -838,6 +886,7 @@ def write_global_result_png(
                 [
                     final_contact.min_margin_pose_index,
                     int(np.argmax(np.abs(final_contact.pose_yaw_rad))),
+                    int(np.argmax(final_contact.simultaneous_line_count)),
                     int(
                         np.searchsorted(
                             final_contact.pose_distance_mm,
@@ -849,6 +898,25 @@ def write_global_result_png(
                 ],
                 dtype=np.int32,
             )
+            current_x_at_contact = np.interp(
+                final_contact.source_progress_index,
+                current.path.source_progress_index,
+                current.path.x_mm,
+            )
+            current_y_at_contact = np.interp(
+                final_contact.source_progress_index,
+                current.path.source_progress_index,
+                current.path.y_mm,
+            )
+            maximum_difference_index = int(
+                np.argmax(
+                    np.hypot(
+                        final_contact.pose_x_mm - current_x_at_contact,
+                        final_contact.pose_y_mm - current_y_at_contact,
+                    )
+                )
+            )
+            special = np.append(special, maximum_difference_index)
             switch_indices = np.flatnonzero(
                 np.diff(final_contact.source_progress_index) > 1.0
             ) + 1
@@ -868,12 +936,30 @@ def write_global_result_png(
             for pose_index in sample_indices:
                 _draw_vehicle_outline(
                     zoom_axis,
-                    comparison.vehicle_footprint.polygon_components_mm,
+                    comparison.vehicle_footprint.contact_witness_components_mm,
                     float(final_contact.pose_x_mm[pose_index]),
                     float(final_contact.pose_y_mm[pose_index]),
                     float(final_contact.pose_yaw_rad[pose_index]),
                     color="#059669",
                 )
+            for special_number, pose_index in enumerate(np.unique(special)):
+                selected_segment = int(final_contact.source_progress_index[pose_index])
+                for segment in final_contact.contact_segments[pose_index]:
+                    if segment < 0 or segment + 1 >= local.original.path.x_mm.size:
+                        continue
+                    zoom_axis.plot(
+                        local.original.path.x_mm[segment : segment + 2],
+                        local.original.path.y_mm[segment : segment + 2],
+                        color="#2563EB" if segment == selected_segment else "#10B981",
+                        linewidth=3.0,
+                        alpha=0.85,
+                        label=(
+                            "DP選択接触線／同時接触線"
+                            if special_number == 0 and segment == selected_segment
+                            else None
+                        ),
+                        zorder=7,
+                    )
         theoretical_contact = theoretical_result.contact
         if theoretical_contact is not None:
             detached = np.asarray(
@@ -886,7 +972,7 @@ def write_global_result_png(
             for pose_index in detached_starts[:30]:
                 _draw_vehicle_outline(
                     zoom_axis,
-                    comparison.vehicle_footprint.polygon_components_mm,
+                    comparison.vehicle_footprint.contact_witness_components_mm,
                     float(theoretical_contact.pose_x_mm[pose_index]),
                     float(theoretical_contact.pose_y_mm[pose_index]),
                     float(theoretical_contact.pose_yaw_rad[pose_index]),
@@ -897,21 +983,22 @@ def write_global_result_png(
         zoom_axis.text(
             0.03,
             0.04,
-            "LN5実車床面投影が未設定のため\n"
-            "外形・重なり・最小接触余裕は描画しない",
+            "接触証明部品が未設定のため\n"
+            "横バー・重なり・最小接触余裕は描画しない",
             transform=zoom_axis.transAxes,
             fontsize=9.0,
             color="#B91C1C",
             bbox={"facecolor": "#FEF2F2", "edgecolor": "#FCA5A5", "alpha": 0.95},
         )
-    zoom_x = np.concatenate((source_x, theoretical.path.x_mm[theoretical_shortcut]))
-    zoom_y = np.concatenate((source_y, theoretical.path.y_mm[theoretical_shortcut]))
+    focus_shortcut = focus_path.path.shortcut_edge_id > 0
+    zoom_x = np.concatenate((source_x, focus_path.path.x_mm[focus_shortcut]))
+    zoom_y = np.concatenate((source_y, focus_path.path.y_mm[focus_shortcut]))
     pad_x = max(100.0, float(np.ptp(zoom_x)) * 0.08)
     pad_y = max(100.0, float(np.ptp(zoom_y)) * 0.08)
     zoom_axis.set_xlim(float(np.min(zoom_x)) - pad_x, float(np.max(zoom_x)) + pad_x)
     zoom_axis.set_ylim(float(np.min(zoom_y)) - pad_y, float(np.max(zoom_y)) + pad_y)
     zoom_axis.set_title(
-        f"無効化した最大ジャンプ: index {start_index}→{end_index}（{kind}）",
+        f"最大短縮区間: source {start_index}→{end_index}（{kind}）",
         fontsize=11.5,
     )
     zoom_axis.set_xlabel("X [mm]")
@@ -920,7 +1007,13 @@ def write_global_result_png(
     zoom_axis.grid(True, color="#D1D5DB", linewidth=0.5, alpha=0.65)
     zoom_axis.legend(loc="best", fontsize=6.7, framealpha=0.93)
 
-    results = (None, theoretical_result, reference_result, embedded_result, None)
+    results = (
+        None,
+        theoretical_result,
+        reference_result,
+        embedded_result,
+        final_result,
+    )
     items = (current, theoretical, reference, embedded, final)
     column_names = ("現在", "2.980理論", "legal ref", "embedded", "最終")
     contacts = (
@@ -928,20 +1021,23 @@ def write_global_result_png(
         theoretical_result.contact,
         reference_result.contact,
         embedded_result.contact,
-        reference_result.contact
-        if reference_result.legal and final.path.selected_edges == reference.path.selected_edges
-        else embedded_result.contact
-        if embedded_result.legal and final.path.selected_edges == embedded.path.selected_edges
-        else None,
+        final_contact,
+    )
+    sensitivities = (
+        None,
+        None,
+        reference_result.sensitivity,
+        embedded_result.sensitivity,
+        final_sensitivity,
     )
     legal_labels = (
         "既存fallback",
-        "不合法",
-        "合法" if reference_result.legal else "未評価",
-        "合法" if embedded_result.legal else "未評価",
-        "合法"
+        "理論のみ・不採用",
+        "設計上legal" if reference_result.legal else "不成立",
+        "設計上legal" if embedded_result.legal else "不成立",
+        "設計上legal"
         if contacts[-1] is not None and contacts[-1].legal
-        else "正式fallback（未評価）",
+        else "fallback",
     )
     row_labels = (
         "予測時間 [s]",
@@ -949,40 +1045,43 @@ def write_global_result_png(
         "合法／不合法",
         "robust／警告",
         "白線完全離脱数",
+        "未通過LINE segment数",
         "最小重なり面積 [mm²]",
         "最小接触余裕 [mm]",
-        "ライン乗り換え数",
-        "浅角交差数",
-        "平行近接距離 [m]",
-        "板境界判定",
-        "実車外形ソース",
-        "ショートカット辺数",
+        "segment飛越し数（要0）",
+        "同時接触姿勢数",
+        "横バー寸法 [mm]",
+        "design confirmed",
+        "as-built confirmed",
+        "取付±2mm / yaw±1deg",
         "計算時間 [s]",
     )
     columns: list[list[str]] = []
-    for position, (item, result, contact) in enumerate(
-        zip(items, results, contacts, strict=True)
+    for position, (item, result, contact, sensitivity) in enumerate(
+        zip(items, results, contacts, sensitivities, strict=True)
     ):
         metrics = item.metrics
         robust_text = (
-            "robust" if contact is not None and contact.robust else "警告／未評価"
+            "robust"
+            if contact is not None
+            and contact.robust
+            and sensitivity is not None
+            and sensitivity.robust_2mm_1deg
+            else "警告／未評価"
         )
         detachment = "―" if contact is None else str(contact.detachment_count)
+        unvisited = "―" if contact is None else str(contact.unvisited_segment_count)
         min_area = "―" if contact is None else f"{contact.min_overlap_area_mm2:.1f}"
         min_margin = "―" if contact is None else f"{contact.min_contact_margin_mm:.2f}"
         switches = "―" if contact is None else str(contact.line_switch_count)
-        shallow = metrics.shallow_line_crossing_count
-        board_text = (
-            "実車外形で確認"
-            if contact is not None and contact.legal and comparison.board_boundary is not None
-            else "実車未確認"
+        simultaneous_count = (
+            "―" if contact is None else str(contact.simultaneous_contact_pose_count)
         )
-        source_text = (
-            "規定最大250mm仮想円"
-            if position == 1
-            else "LN5未設定"
-            if not comparison.vehicle_footprint.confirmed
-            else "LN5確認済み外形"
+        sensitivity_text = (
+            "―"
+            if sensitivity is None
+            else f"{'OK' if sensitivity.position_all_legal[1] else 'NG'} / "
+            f"{'OK' if sensitivity.yaw_all_legal[1] else 'NG'}"
         )
         columns.append(
             [
@@ -991,14 +1090,15 @@ def write_global_result_png(
                 legal_labels[position],
                 robust_text,
                 detachment,
+                unvisited,
                 min_area,
                 min_margin,
                 switches,
-                str(shallow),
-                f"{metrics.parallel_line_distance_m:.3f}",
-                board_text,
-                source_text,
-                str(metrics.shortcut_edge_count),
+                simultaneous_count,
+                "10×200",
+                "true",
+                "false",
+                sensitivity_text,
                 "―" if result is None else f"{result.stats.total_s:.2f}",
             ]
         )
@@ -1033,7 +1133,8 @@ def write_global_result_png(
         0.0,
         0.02,
         f"{comparison.footprint_status}\n"
-        "2.980秒と2.004秒は理論下限であり、競技有効経路として採用しない。",
+        "全LINE segmentを順番に通過。1区間でも未通過なら不合格。\n"
+        "2.980秒と2.004秒、旧3.591秒は競技有効経路として採用しない。",
         transform=table_axis.transAxes,
         fontsize=8.0,
         color="#991B1B",
@@ -1046,7 +1147,7 @@ def write_global_result_png(
         contact_axis.text(
             0.5,
             0.62,
-            "LN5実車外形未設定",
+            "接触証明横バー未設定",
             ha="center",
             va="center",
             fontsize=18,
@@ -1056,7 +1157,7 @@ def write_global_result_png(
             0.5,
             0.47,
             "実接触segment・重なり面積・接触余裕・同時接触数は\n"
-            "外形確認まで計算しない。最終は4.471秒へフォールバック。",
+            "横バー確認まで計算しない。最終は4.471秒へフォールバック。",
             ha="center",
             va="center",
             fontsize=11,
@@ -1114,13 +1215,14 @@ def write_global_result_png(
         contact_axis.grid(True, color="#D1D5DB", linewidth=0.45, alpha=0.65)
         contact_axis.legend(loc="upper left", fontsize=7.0)
         metric_axis.legend(loc="upper right", fontsize=7.0)
-        contact_axis.set_title("実接触segment DPと接触余裕", fontsize=12)
+        contact_axis.set_title("全LINE実接触segment DPと接触余裕", fontsize=12)
 
     figure.text(
         0.5,
         0.012,
         "固定ATTACKモデル: R10=min=始端=終端=3.6m/s、max=13.0m/s、加速20～55、減速55m/s²、omega 300～1500deg/s、AALP 100、前後4反復。"
-        "実車外形未設定時は大域経路を採用しない。",
+        "白線接触=設計承認200mm横バー、全LINE segmentを順番に通過、板外=半径125mm円。"
+        "as-built未確認のため実車確認済みとは扱わない。",
         ha="center",
         va="bottom",
         fontsize=8.0,
@@ -1179,8 +1281,10 @@ def write_all_courses_png(
     def short_status(item: BatchCourseResult) -> str:
         if not item.valid:
             return "不合格"
-        if "LN5実車外形未設定" in item.status:
-            return "fallback（外形未設定）"
+        if "設計legal経路なし" in item.status:
+            return "fallback（design legalなし）"
+        if "設計legal/robust" in item.status:
+            return "design legal / robust"
         return "fallback" if item.fallback_used else "改善"
 
     table_rows = [
@@ -1223,7 +1327,12 @@ def write_all_courses_png(
         elif column == 0:
             cell.set_facecolor("#F3F4F6")
             cell.set_text_props(ha="left")
-    improved = sum(item.improvement_s < -1.0e-6 and item.valid for item in results)
+    improved = sum(
+        item.improvement_s < -1.0e-6
+        and item.valid
+        and not item.fallback_used
+        for item in results
+    )
     fallback = sum(item.fallback_used and item.valid for item in results)
     invalid = sum(not item.valid for item in results)
     table_axis.set_title(
@@ -1233,7 +1342,8 @@ def write_all_courses_png(
     figure.text(
         0.5,
         0.012,
-        "LN5実車外形未設定のため全大会で大域探索を停止し既存経路へfallback。板境界未収録大会は板内も未確認。実走保証ではありません。",
+        "設計承認200mm横バーが全LINE segmentへ実接触する経路だけを採用。板外は半径125mm円で評価。"
+        "as-built未確認で、実走保証ではありません。",
         ha="center",
         fontsize=8.2,
         color="#4B5563",

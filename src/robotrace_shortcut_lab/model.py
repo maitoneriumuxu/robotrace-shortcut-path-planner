@@ -59,6 +59,9 @@ class PlannerConfig:
     embedded_edge_limit: int = 1_200
     reference_top_k: int = 64
     embedded_top_k: int = 8
+    legal_reference_edge_check_limit: int = 1_200
+    legal_embedded_edge_check_limit: int = 300
+    legal_reference_top_k: int = 16
     reference_max_skip_mm: float = 12_000.0
     embedded_max_skip_mm: float = 6_000.0
     shortcut_min_skip_mm: float = 250.0
@@ -79,11 +82,16 @@ class PlannerConfig:
     white_line_half_width_mm: float = 9.5
     legal_pose_step_mm: float = 2.0
     legal_yaw_step_deg: float = 1.0
-    contact_dp_local_jump_segments: int = 8
+    # 競技では全LINE区間の通過が必要。通常の実接触progressは同一segmentに
+    # 留まるか次へ進む。同一姿勢で中間segment全てへ実接触した場合だけ、
+    # 点列密度に応じた複数segment前進を許す（未接触segmentの飛越しは禁止）。
+    contact_dp_max_progress_step_segments: int = 1
     minimum_overlap_area_mm2: float = 20.0
     minimum_penetration_mm: float = 1.0
     minimum_contact_margin_mm: float = 1.0
     robust_thresholds_confirmed: bool = False
+    robust_position_errors_mm: tuple[float, ...] = (1.0, 2.0, 5.0)
+    robust_yaw_errors_deg: tuple[float, ...] = (0.5, 1.0, 2.0)
     # 合法性と分離したセンサ誤認リスク。合法候補間の同順位比較にだけ使う。
     legal_crossing_risk_penalty_s: float = 0.01
     legal_shallow_crossing_risk_penalty_s: float = 0.10
@@ -199,17 +207,30 @@ class BoardBoundary:
 
 @dataclass(frozen=True)
 class VehicleFootprint:
-    """LN5のロボット座標系で定義した床面投影外形。"""
+    """全車体外形と白線接触を証明する物理部品を分離した定義。"""
 
-    polygon_components_mm: tuple[np.ndarray, ...]
+    full_footprint_components_mm: tuple[np.ndarray, ...]
+    contact_witness_components_mm: tuple[np.ndarray, ...]
     origin_definition: str
-    front_mm: float | None
-    rear_mm: float | None
-    left_mm: float | None
-    right_mm: float | None
+    board_clearance_radius_mm: float
     safety_margin_mm: float
     source: str
-    confirmed: bool
+    full_footprint_source: str
+    contact_witness_source: str
+    design_confirmed: bool
+    as_built_confirmed: bool
+
+
+@dataclass(frozen=True)
+class ContactSensitivity:
+    """接触証明部品の取付位置・yaw誤差に対する合法性。"""
+
+    position_error_mm: np.ndarray
+    position_all_legal: np.ndarray
+    yaw_error_deg: np.ndarray
+    yaw_all_legal: np.ndarray
+    robust_2mm_1deg: bool
+    evaluated_variants: int
 
 
 @dataclass(frozen=True)
@@ -234,9 +255,13 @@ class ContactEvaluation:
     robust: bool
     detachment_count: int
     line_switch_count: int
+    all_line_segments_covered: bool
+    unvisited_segment_count: int
     min_overlap_area_mm2: float
     min_penetration_mm: float
     min_contact_margin_mm: float
+    near_point_contact_distance_mm: float
+    simultaneous_contact_pose_count: int
     min_margin_pose_index: int
     violation: str
     warning: str
@@ -320,6 +345,10 @@ class GlobalSearchResult:
     stats: GlobalSearchStats
     fallback_used: bool
     contact: ContactEvaluation | None = None
+    sensitivity: ContactSensitivity | None = None
+    robust_best: EvaluatedGlobalPath | None = None
+    robust_best_contact: ContactEvaluation | None = None
+    robust_best_sensitivity: ContactSensitivity | None = None
     legal: bool = False
     robust: bool = False
     legality_status: str = "競技合法性未評価"
@@ -334,6 +363,9 @@ class GlobalComparison:
     reference: GlobalSearchResult
     embedded_lite: GlobalSearchResult
     final: EvaluatedGlobalPath
+    robust_final: EvaluatedGlobalPath | None
+    robust_final_contact: ContactEvaluation | None
+    robust_final_sensitivity: ContactSensitivity | None
     board_boundary: BoardBoundary | None
     board_status: str
     vehicle_footprint: VehicleFootprint

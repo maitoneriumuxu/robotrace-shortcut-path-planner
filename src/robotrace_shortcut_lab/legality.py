@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
-from shapely.geometry import LineString, Polygon, box
+import shapely
+from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
 
 from .model import (
     BoardBoundary,
     ContactEvaluation,
+    ContactSensitivity,
     Course,
     GlobalPath,
     PlannerConfig,
@@ -25,58 +28,57 @@ FOOTPRINT_FILE = Path("data/vehicle/LN5_footprint.json")
 def load_vehicle_footprint(
     path: str | Path = FOOTPRINT_FILE,
 ) -> VehicleFootprint:
-    """実車外形を読む。confirmedでも頂点が不正な場合は未確認へ降格する。"""
+    """全車体外形と接触証明部品を混同せずに読む。"""
 
     source_path = Path(path)
     if not source_path.exists():
         return VehicleFootprint(
-            (),
-            "未設定",
-            None,
-            None,
-            None,
-            None,
-            0.0,
-            f"{source_path}が存在しない",
-            False,
+            full_footprint_components_mm=(),
+            contact_witness_components_mm=(),
+            origin_definition="未設定",
+            board_clearance_radius_mm=125.0,
+            safety_margin_mm=0.0,
+            source=f"{source_path}が存在しない",
+            full_footprint_source="未設定",
+            contact_witness_source="未設定",
+            design_confirmed=False,
+            as_built_confirmed=False,
         )
     data = json.loads(source_path.read_text(encoding="utf-8"))
-    raw_components = data.get("polygon_components_mm") or []
-    if not raw_components and data.get("polygon_vertices_mm"):
-        raw_components = [data["polygon_vertices_mm"]]
-    components: list[np.ndarray] = []
-    for raw in raw_components:
-        vertices = np.asarray(raw, dtype=np.float64)
-        if (
-            vertices.ndim != 2
-            or vertices.shape[0] < 3
-            or vertices.shape[1] != 2
-            or not np.isfinite(vertices).all()
-        ):
-            continue
-        polygon = Polygon(vertices)
-        if polygon.is_valid and polygon.area > 1.0e-6:
-            components.append(vertices.astype(np.float32))
-    requested_confirmed = bool(data.get("confirmed", False))
-    confirmed = requested_confirmed and bool(components)
 
-    def optional_float(name: str) -> float | None:
-        value = data.get(name)
-        return None if value is None else float(value)
+    def valid_components(name: str) -> tuple[np.ndarray, ...]:
+        components: list[np.ndarray] = []
+        for raw in data.get(name, ()):
+            vertices = np.asarray(raw, dtype=np.float64)
+            if (
+                vertices.ndim != 2
+                or vertices.shape[0] < 3
+                or vertices.shape[1] != 2
+                or not np.isfinite(vertices).all()
+            ):
+                continue
+            polygon = Polygon(vertices)
+            if polygon.is_valid and polygon.area > 1.0e-6:
+                components.append(vertices.astype(np.float32))
+        return tuple(components)
 
-    source = str(data.get("source", source_path))
-    if requested_confirmed and not confirmed:
-        source += "（confirmed=trueだが有効な外形頂点がない）"
+    full = valid_components("full_footprint_components_mm")
+    witness = valid_components("contact_witness_components_mm")
+    design_confirmed = bool(data.get("design_confirmed", False)) and bool(witness)
+    as_built_confirmed = (
+        bool(data.get("as_built_confirmed", False)) and bool(full) and bool(witness)
+    )
     return VehicleFootprint(
-        tuple(components),
-        str(data.get("origin_definition", "未設定")),
-        optional_float("front_mm"),
-        optional_float("rear_mm"),
-        optional_float("left_mm"),
-        optional_float("right_mm"),
-        float(data.get("safety_margin_mm", 0.0)),
-        source,
-        confirmed,
+        full_footprint_components_mm=full,
+        contact_witness_components_mm=witness,
+        origin_definition=str(data.get("origin_definition", "未設定")),
+        board_clearance_radius_mm=float(data.get("board_clearance_radius_mm", 125.0)),
+        safety_margin_mm=float(data.get("safety_margin_mm", 0.0)),
+        source=str(data.get("source", source_path)),
+        full_footprint_source=str(data.get("full_footprint_source", "未設定")),
+        contact_witness_source=str(data.get("contact_witness_source", "未設定")),
+        design_confirmed=design_confirmed,
+        as_built_confirmed=as_built_confirmed,
     )
 
 
@@ -130,6 +132,7 @@ def solve_contact_progress(
     *,
     start_segment: int | None = None,
     end_segment: int | None = None,
+    endpoint_tolerance_segments: int = 0,
 ) -> np.ndarray | None:
     """実際に接触したsegmentだけで単調な進行列をDP選択する。"""
 
@@ -137,16 +140,20 @@ def solve_contact_progress(
         return None
     first = tuple(sorted(set(contact_segments[0])))
     if start_segment is not None:
-        first = tuple(segment for segment in first if segment == start_segment)
+        first = tuple(
+            segment
+            for segment in first
+            if abs(segment - start_segment) <= endpoint_tolerance_segments
+        )
     if not first:
         return None
     states = {segment: 0.0 for segment in first}
     parents: list[dict[int, int]] = [{segment: -1 for segment in first}]
-    previous_set = set(first)
-    local_jump = config.contact_dp_local_jump_segments
+    max_step = config.contact_dp_max_progress_step_segments
     for pose_index in range(1, len(contact_segments)):
         current = tuple(sorted(set(contact_segments[pose_index])))
         current_set = set(current)
+        transition_contact_set = current_set | set(contact_segments[pose_index - 1])
         next_states: dict[int, float] = {}
         next_parent: dict[int, int] = {}
         for segment in current:
@@ -156,12 +163,16 @@ def solve_contact_progress(
                 if segment < previous:
                     continue
                 jump = segment - previous
-                simultaneous = (
-                    previous in current_set or segment in previous_set
-                )
-                if jump > local_jump and not simultaneous:
-                    continue
-                cost = previous_cost + abs(jump - 0.2) + (20.0 if jump > local_jump else 0.0)
+                if jump > max_step:
+                    # 点列間隔が姿勢間隔より細かいコースでは、同一姿勢で
+                    # 複数の連続segmentへ接触する。その全てが実接触集合に
+                    # ある場合だけまとめて進め、未接触の中間は飛ばさない。
+                    if not all(
+                        required in transition_contact_set
+                        for required in range(previous + 1, segment + 1)
+                    ):
+                        continue
+                cost = previous_cost + abs(jump - 0.2)
                 if cost < best_cost or (
                     abs(cost - best_cost) <= 1.0e-12 and previous > best_previous
                 ):
@@ -174,11 +185,15 @@ def solve_contact_progress(
             return None
         states = next_states
         parents.append(next_parent)
-        previous_set = current_set
     if end_segment is not None:
-        if end_segment not in states:
+        end_candidates = [
+            segment
+            for segment in states
+            if abs(segment - end_segment) <= endpoint_tolerance_segments
+        ]
+        if not end_candidates:
             return None
-        selected = end_segment
+        selected = min(end_candidates, key=lambda segment: (states[segment], -segment))
     else:
         selected = min(states, key=lambda segment: (states[segment], -segment))
     progress = np.empty(len(contact_segments), dtype=np.float32)
@@ -189,7 +204,7 @@ def solve_contact_progress(
 
 
 class WhiteLineContactEvaluator:
-    """Shapelyのカプセル和集合で実車外形と白線の連続接触を調べる。"""
+    """接触証明部品と白線、保守125mm円と板を別々に調べる。"""
 
     def __init__(
         self,
@@ -198,14 +213,18 @@ class WhiteLineContactEvaluator:
         config: PlannerConfig,
         boundary: BoardBoundary | None = None,
     ) -> None:
-        if not footprint.confirmed or not footprint.polygon_components_mm:
-            raise ValueError("LN5実車外形が未確認です")
+        if not footprint.design_confirmed or not footprint.contact_witness_components_mm:
+            raise ValueError("白線接触証明部品が設計確認されていません")
         self.course = course
         self.footprint = footprint
         self.config = config
         self.local_components = tuple(
             np.asarray(component, dtype=np.float64)
-            for component in footprint.polygon_components_mm
+            for component in footprint.contact_witness_components_mm
+        )
+        self.witness_max_radius_mm = max(
+            float(np.max(np.hypot(component[:, 0], component[:, 1])))
+            for component in self.local_components
         )
         coordinates = np.column_stack((course.x_mm, course.y_mm)).astype(np.float64)
         self.centerline = LineString(coordinates)
@@ -236,17 +255,100 @@ class WhiteLineContactEvaluator:
             if boundary is not None
             else None
         )
+        self.board_center_region = (
+            self.board_region.buffer(
+                -footprint.board_clearance_radius_mm,
+                quad_segs=16,
+                join_style="round",
+            )
+            if self.board_region is not None
+            else None
+        )
 
-    def vehicle_geometry(self, x_mm: float, y_mm: float, yaw_rad: float):
+    def count_radially_unreachable_segments(
+        self,
+        x_mm: np.ndarray,
+        y_mm: np.ndarray,
+        start_segment: int,
+        end_segment: int,
+    ) -> int:
+        """外接円でも届かない必須LINEを詳細姿勢判定前に数える。"""
+
+        start = max(0, start_segment)
+        end = min(len(self.segment_lines) - 1, end_segment)
+        if end < start:
+            return 0
+        path_line = LineString(
+            np.column_stack((x_mm.astype(np.float64), y_mm.astype(np.float64)))
+        )
+        required = np.asarray(self.segment_lines[start : end + 1], dtype=object)
+        distances = np.asarray(shapely.distance(required, path_line), dtype=np.float64)
+        reachable_radius = self.witness_max_radius_mm + self.config.white_line_half_width_mm
+        return int(np.count_nonzero(distances > reachable_radius + 1.0e-9))
+
+    def witness_geometry(
+        self,
+        x_mm: float,
+        y_mm: float,
+        yaw_rad: float,
+        witness_offset_x_mm: float = 0.0,
+        witness_offset_y_mm: float = 0.0,
+        witness_yaw_error_rad: float = 0.0,
+    ):
         cosine = float(np.cos(yaw_rad))
         sine = float(np.sin(yaw_rad))
+        local_cosine = float(np.cos(witness_yaw_error_rad))
+        local_sine = float(np.sin(witness_yaw_error_rad))
         polygons = []
         for component in self.local_components:
+            local_x = (
+                local_cosine * component[:, 0]
+                - local_sine * component[:, 1]
+                + witness_offset_x_mm
+            )
+            local_y = (
+                local_sine * component[:, 0]
+                + local_cosine * component[:, 1]
+                + witness_offset_y_mm
+            )
             # 外形JSONは+X=前方、+Y=左方。経路yawは世界+X基準。
-            world_x = x_mm + cosine * component[:, 0] - sine * component[:, 1]
-            world_y = y_mm + sine * component[:, 0] + cosine * component[:, 1]
+            world_x = x_mm + cosine * local_x - sine * local_y
+            world_y = y_mm + sine * local_x + cosine * local_y
             polygons.append(Polygon(np.column_stack((world_x, world_y))))
         return unary_union(polygons)
+
+    def witness_geometries(
+        self,
+        x_mm: np.ndarray,
+        y_mm: np.ndarray,
+        yaw_rad: np.ndarray,
+        witness_offset_x_mm: float = 0.0,
+        witness_offset_y_mm: float = 0.0,
+        witness_yaw_error_rad: float = 0.0,
+    ):
+        """全姿勢の接触証明部品をShapely 2配列演算で一括生成する。"""
+
+        cosine = np.cos(yaw_rad.astype(np.float64))[:, None]
+        sine = np.sin(yaw_rad.astype(np.float64))[:, None]
+        local_cosine = float(np.cos(witness_yaw_error_rad))
+        local_sine = float(np.sin(witness_yaw_error_rad))
+        geometries = None
+        for component in self.local_components:
+            local_x = (
+                local_cosine * component[:, 0]
+                - local_sine * component[:, 1]
+                + witness_offset_x_mm
+            )
+            local_y = (
+                local_sine * component[:, 0]
+                + local_cosine * component[:, 1]
+                + witness_offset_y_mm
+            )
+            world_x = x_mm[:, None] + cosine * local_x[None, :] - sine * local_y[None, :]
+            world_y = y_mm[:, None] + sine * local_x[None, :] + cosine * local_y[None, :]
+            polygons = shapely.polygons(np.stack((world_x, world_y), axis=2))
+            geometries = polygons if geometries is None else shapely.union(geometries, polygons)
+        return geometries
 
     @staticmethod
     def _contact_group_count(segments: tuple[int, ...]) -> int:
@@ -265,39 +367,68 @@ class WhiteLineContactEvaluator:
         *,
         start_segment: int | None = None,
         end_segment: int | None = None,
+        endpoint_tolerance_segments: int = 0,
+        witness_offset_x_mm: float = 0.0,
+        witness_offset_y_mm: float = 0.0,
+        witness_yaw_error_rad: float = 0.0,
+        check_board: bool = True,
+        compute_metrics: bool = True,
     ) -> ContactEvaluation:
         pose_distance, pose_x, pose_y, pose_yaw = resample_swept_poses(
             x_mm, y_mm, yaw_rad, self.config
         )
-        contacts: list[tuple[int, ...]] = []
-        overlap_area = np.zeros(pose_x.size, dtype=np.float32)
-        penetration = np.zeros(pose_x.size, dtype=np.float32)
-        boundary_length = np.zeros(pose_x.size, dtype=np.float32)
-        contact_margin = np.full(pose_x.size, -np.inf, dtype=np.float32)
-        simultaneous = np.zeros(pose_x.size, dtype=np.int16)
-        board_outside = 0
-        for index, (x, y, yaw) in enumerate(
-            zip(pose_x, pose_y, pose_yaw, strict=True)
-        ):
-            vehicle = self.vehicle_geometry(float(x), float(y), float(yaw))
-            if self.board_region is not None and not self.board_region.covers(vehicle):
-                board_outside += 1
-            candidate_indices = self.segment_tree.query(vehicle, predicate="intersects")
-            segments = tuple(sorted(int(value) for value in candidate_indices))
-            contacts.append(segments)
-            simultaneous[index] = self._contact_group_count(segments)
-            if not segments:
-                continue
-            intersection = vehicle.intersection(self.white_region)
-            overlap_area[index] = float(intersection.area)
-            boundary_length[index] = float(vehicle.boundary.intersection(self.white_region).length)
-            centerline_distance = min(
-                float(vehicle.distance(self.segment_lines[segment]))
-                for segment in segments
+        vehicles = self.witness_geometries(
+            pose_x,
+            pose_y,
+            pose_yaw,
+            witness_offset_x_mm,
+            witness_offset_y_mm,
+            witness_yaw_error_rad,
+        )
+        contact_lists: list[list[int]] = [[] for _ in range(pose_x.size)]
+        pairs = self.segment_tree.query(vehicles, predicate="intersects")
+        if pairs.size:
+            for pose_index, segment_index in zip(pairs[0], pairs[1], strict=True):
+                contact_lists[int(pose_index)].append(int(segment_index))
+        contacts = [tuple(sorted(set(segments))) for segments in contact_lists]
+        simultaneous = np.asarray(
+            [self._contact_group_count(segments) for segments in contacts],
+            dtype=np.int16,
+        )
+        has_contact = np.asarray([bool(segments) for segments in contacts], dtype=np.bool_)
+        if compute_metrics:
+            intersections = shapely.intersection(vehicles, self.white_region)
+            overlap_area = np.asarray(shapely.area(intersections), dtype=np.float32)
+            boundary_length = np.asarray(
+                shapely.length(
+                    shapely.intersection(shapely.boundary(vehicles), self.white_region)
+                ),
+                dtype=np.float32,
             )
-            margin = self.config.white_line_half_width_mm - centerline_distance
-            penetration[index] = max(0.0, margin)
-            contact_margin[index] = margin
+            centerline_distance = np.asarray(
+                shapely.distance(vehicles, self.centerline), dtype=np.float32
+            )
+            contact_margin = (
+                self.config.white_line_half_width_mm - centerline_distance
+            ).astype(np.float32)
+            contact_margin[~has_contact] = -np.inf
+            penetration = np.maximum(contact_margin, 0.0).astype(np.float32)
+        else:
+            overlap_area = has_contact.astype(np.float32)
+            boundary_length = np.zeros(pose_x.size, dtype=np.float32)
+            contact_margin = np.where(has_contact, 1.0, -np.inf).astype(np.float32)
+            penetration = has_contact.astype(np.float32)
+        if check_board and self.board_center_region is not None:
+            board_inside = np.asarray(
+                shapely.covers(
+                    self.board_center_region,
+                    shapely.points(pose_x.astype(np.float64), pose_y.astype(np.float64)),
+                ),
+                dtype=np.bool_,
+            )
+            board_outside = int(np.count_nonzero(~board_inside))
+        else:
+            board_outside = 0
         contact_tuple = tuple(contacts)
         empty = np.asarray([not item for item in contact_tuple], dtype=np.bool_)
         detachment_count = int(
@@ -308,14 +439,31 @@ class WhiteLineContactEvaluator:
             self.config,
             start_segment=start_segment,
             end_segment=end_segment,
+            endpoint_tolerance_segments=endpoint_tolerance_segments,
         )
         violations: list[str] = []
+        if start_segment is not None and end_segment is not None:
+            required_start = max(0, start_segment)
+            required_end = min(len(self.segment_lines) - 1, end_segment)
+            contacted = {
+                segment
+                for segments in contact_tuple
+                for segment in segments
+                if required_start <= segment <= required_end
+            }
+            required_count = max(required_end - required_start + 1, 0)
+            unvisited_segment_count = required_count - len(contacted)
+        else:
+            unvisited_segment_count = 0
+        all_line_segments_covered = unvisited_segment_count == 0
         if detachment_count:
             violations.append(f"白線完全離脱{detachment_count}区間")
+        if not all_line_segments_covered:
+            violations.append(f"未通過LINE segment {unvisited_segment_count}区間")
         if progress is None and not detachment_count:
-            violations.append("単調な実接触segment列が不成立")
+            violations.append("全LINEを順番に通る実接触segment列が不成立")
         if board_outside:
-            violations.append(f"実車外形が板外{board_outside}姿勢")
+            violations.append(f"規定最大半径125mm円が板外{board_outside}姿勢")
         legal = not violations
         if progress is None:
             progress = np.full(pose_x.size, -1.0, dtype=np.float32)
@@ -333,6 +481,13 @@ class WhiteLineContactEvaluator:
         min_penetration = float(np.min(penetration)) if penetration.size else 0.0
         min_margin = float(np.min(contact_margin)) if contact_margin.size else float("-inf")
         min_margin_index = int(np.argmin(contact_margin)) if contact_margin.size else 0
+        near_point = (
+            (overlap_area < self.config.minimum_overlap_area_mm2)
+            | (contact_margin < self.config.minimum_contact_margin_mm)
+        )
+        pose_step = np.diff(pose_distance, prepend=pose_distance[0])
+        near_point_distance = float(np.sum(pose_step[near_point]))
+        simultaneous_pose_count = int(np.count_nonzero(simultaneous >= 2))
         robust = bool(
             legal
             and min_area >= self.config.minimum_overlap_area_mm2
@@ -344,7 +499,16 @@ class WhiteLineContactEvaluator:
             warnings.append("接触余裕がrobust仮閾値未満")
         if not self.config.robust_thresholds_confirmed:
             warnings.append("robust閾値の実機根拠未確定")
-        switches = int(np.count_nonzero(np.diff(progress) > 1.0))
+        switches = sum(
+            int(current - previous > 1)
+            for previous, current, segments in zip(
+                progress[:-1], progress[1:], contact_tuple[1:], strict=True
+            )
+            if not all(
+                required in segments
+                for required in range(int(previous) + 1, int(current) + 1)
+            )
+        )
         return ContactEvaluation(
             pose_distance,
             pose_x,
@@ -364,13 +528,94 @@ class WhiteLineContactEvaluator:
             robust,
             detachment_count,
             switches,
+            all_line_segments_covered,
+            unvisited_segment_count,
             min_area,
             min_penetration,
             min_margin,
+            near_point_distance,
+            simultaneous_pose_count,
             min_margin_index,
             "、".join(violations),
             "、".join(warnings),
         )
+
+
+def evaluate_contact_sensitivity(
+    evaluator: WhiteLineContactEvaluator,
+    x_mm: np.ndarray,
+    y_mm: np.ndarray,
+    yaw_rad: np.ndarray,
+    config: PlannerConfig,
+    *,
+    start_segment: int = 0,
+    end_segment: int | None = None,
+) -> ContactSensitivity:
+    """取付誤差は±X/±Y、yaw誤差は±角度の全組で合法性を調べる。"""
+
+    if end_segment is None:
+        end_segment = evaluator.course.point_count - 2
+    tasks: list[tuple[str, int, float, float, float]] = []
+    for error in config.robust_position_errors_mm:
+        for offset_x, offset_y in (
+            (error, 0.0),
+            (-error, 0.0),
+            (0.0, error),
+            (0.0, -error),
+        ):
+            tasks.append(("position", len(tasks), offset_x, offset_y, 0.0))
+    position_task_count = len(tasks)
+    for error_index, error in enumerate(config.robust_yaw_errors_deg):
+        for sign in (-1.0, 1.0):
+            tasks.append(
+                (
+                    "yaw",
+                    error_index,
+                    0.0,
+                    0.0,
+                    float(np.deg2rad(sign * error)),
+                )
+            )
+
+    def evaluate_variant(task: tuple[str, int, float, float, float]) -> bool:
+        _, _, offset_x, offset_y, yaw_error = task
+        return evaluator.evaluate(
+                x_mm,
+                y_mm,
+                yaw_rad,
+                start_segment=start_segment,
+                end_segment=end_segment,
+                witness_offset_x_mm=offset_x,
+                witness_offset_y_mm=offset_y,
+                witness_yaw_error_rad=yaw_error,
+                check_board=False,
+                compute_metrics=False,
+            ).legal
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(evaluate_variant, tasks))
+    position_results = [
+        all(results[index * 4 : index * 4 + 4])
+        for index in range(len(config.robust_position_errors_mm))
+    ]
+    yaw_results = [
+        all(results[position_task_count + index * 2 : position_task_count + index * 2 + 2])
+        for index in range(len(config.robust_yaw_errors_deg))
+    ]
+    position_errors = np.asarray(config.robust_position_errors_mm, dtype=np.float32)
+    yaw_errors = np.asarray(config.robust_yaw_errors_deg, dtype=np.float32)
+    position_legal = np.asarray(position_results, dtype=np.bool_)
+    yaw_legal = np.asarray(yaw_results, dtype=np.bool_)
+    position_2mm = bool(position_legal[np.where(position_errors == 2.0)[0][0]])
+    yaw_1deg = bool(yaw_legal[np.where(yaw_errors == 1.0)[0][0]])
+    return ContactSensitivity(
+        position_errors,
+        position_legal,
+        yaw_errors,
+        yaw_legal,
+        position_2mm and yaw_1deg,
+        len(tasks),
+    )
 
 
 def apply_contact_progress_to_path(
