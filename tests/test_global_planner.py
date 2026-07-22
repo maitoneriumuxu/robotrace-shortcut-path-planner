@@ -19,6 +19,7 @@ from robotrace_shortcut_lab.global_planner import (
     run_global_comparison,
     run_global_mode,
 )
+from robotrace_shortcut_lab.legal_planner import run_legal_global_mode
 from robotrace_shortcut_lab.model import BoardBoundary, COURSE_FILE, Course, PlannerConfig
 from robotrace_shortcut_lab.portable import plan_speed, run_comparison
 from robotrace_shortcut_lab.report import write_global_result_png
@@ -61,6 +62,8 @@ class GlobalPlanner2025Tests(unittest.TestCase):
         self.assertEqual(config.max_aalp_deg_s_per_ms, 100.0)
         self.assertEqual(config.search_run_speed_mps, 3.6)
         self.assertEqual(config.speed_scan_iterations, 4)
+        self.assertGreater(config.legal_crossing_risk_penalty_s, 0.0)
+        self.assertGreater(config.legal_shallow_crossing_risk_penalty_s, 0.0)
 
     def test_current_4471_second_baseline_is_reproduced(self) -> None:
         self.assertAlmostEqual(
@@ -69,25 +72,38 @@ class GlobalPlanner2025Tests(unittest.TestCase):
             places=6,
         )
 
-    def test_reference_reaches_under_four_seconds_without_model_change(self) -> None:
-        reference = self.global_comparison.reference.adopted
-        self.assertTrue(reference.metrics.valid, reference.metrics.violation)
-        self.assertLess(reference.metrics.predicted_time_s, 4.0)
-        self.assertLess(
-            reference.metrics.predicted_time_s,
+    def test_2980_path_is_theoretical_and_never_competition_valid(self) -> None:
+        theoretical = self.global_comparison.maximum_vehicle_lower_bound
+        self.assertLess(theoretical.adopted.metrics.predicted_time_s, 4.0)
+        self.assertFalse(theoretical.legal)
+        self.assertIn("競技無効", theoretical.legality_status)
+        self.assertNotEqual(
+            theoretical.adopted.path.selected_edges,
+            self.global_comparison.final.path.selected_edges,
+        )
+
+    def test_unconfirmed_ln5_reference_falls_back_to_4471(self) -> None:
+        reference = self.global_comparison.reference
+        self.assertFalse(reference.legal)
+        self.assertTrue(reference.fallback_used)
+        self.assertAlmostEqual(
+            reference.adopted.metrics.predicted_time_s,
             self.global_comparison.current_baseline.metrics.predicted_time_s,
+            places=9,
         )
 
     def test_embedded_lite_finishes_and_falls_back_when_slower(self) -> None:
         embedded = self.global_comparison.embedded_lite
         self.assertTrue(embedded.adopted.metrics.valid)
+        self.assertFalse(embedded.legal)
+        self.assertTrue(embedded.fallback_used)
         self.assertLessEqual(
             embedded.adopted.metrics.predicted_time_s,
             self.global_comparison.current_baseline.metrics.predicted_time_s + 1.0e-9,
         )
 
     def test_anchor_and_edge_limits_are_kept(self) -> None:
-        reference = self.global_comparison.reference
+        reference = self.global_comparison.maximum_vehicle_lower_bound
         embedded = self.global_comparison.embedded_lite
         self.assertLessEqual(reference.stats.anchor_count, 256)
         self.assertLessEqual(embedded.stats.anchor_count, 96)
@@ -98,6 +114,7 @@ class GlobalPlanner2025Tests(unittest.TestCase):
 
     def test_selected_edges_are_strictly_forward(self) -> None:
         for result in (
+            self.global_comparison.maximum_vehicle_lower_bound,
             self.global_comparison.reference,
             self.global_comparison.embedded_lite,
         ):
@@ -106,7 +123,7 @@ class GlobalPlanner2025Tests(unittest.TestCase):
 
     def test_source_progress_is_monotonic_and_does_not_jump_back(self) -> None:
         for item in (
-            self.global_comparison.geometric_lower_bound,
+            self.global_comparison.current_baseline,
             self.global_comparison.reference.adopted,
             self.global_comparison.embedded_lite.adopted,
             self.global_comparison.final,
@@ -128,7 +145,7 @@ class GlobalPlanner2025Tests(unittest.TestCase):
         self.assertLessEqual(float(np.max(segment)), self.config.max_segment_mm)
 
     def test_top_k_path_is_fully_replanned_with_attack_model(self) -> None:
-        reference = self.global_comparison.reference
+        reference = self.global_comparison.maximum_vehicle_lower_bound
         self.assertEqual(reference.stats.top_k_count, self.config.reference_top_k)
         replanned = plan_speed(
             reference.adopted.path.x_mm,
@@ -142,7 +159,7 @@ class GlobalPlanner2025Tests(unittest.TestCase):
         )
 
     def test_reference_selection_is_deterministic(self) -> None:
-        _, second, _ = run_global_mode(
+        _, second, _ = run_legal_global_mode(
             self.course,
             "reference",
             self.config,
@@ -161,15 +178,6 @@ class GlobalPlanner2025Tests(unittest.TestCase):
     def test_board_boundary_rejects_robot_envelope_outside(self) -> None:
         boundary = load_board_boundary(self.course)
         self.assertIsNotNone(boundary)
-        assert boundary is not None
-        self.assertTrue(
-            board_path_is_inside(
-                self.global_comparison.reference.adopted.path.x_mm,
-                self.global_comparison.reference.adopted.path.y_mm,
-                boundary,
-                self.config.board_robot_margin_mm,
-            )
-        )
         simple = BoardBoundary(((0.0, 1000.0, 0.0, 1000.0),), "test", True)
         self.assertFalse(
             board_path_is_inside(

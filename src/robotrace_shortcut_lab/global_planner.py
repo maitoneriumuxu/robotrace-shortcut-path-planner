@@ -712,6 +712,8 @@ def _make_edges(
     config: PlannerConfig,
     mode: str,
     boundary: BoardBoundary | None,
+    *,
+    apply_theoretical_line_tube: bool = True,
 ) -> tuple[list[_ShortcutEdge], float, int]:
     start_time = perf_counter()
     baseline = comparison.best.path
@@ -803,7 +805,11 @@ def _make_edges(
                     (0.0, max(float(target[-1]), 1.0e-6)),
                     (float(start_index), float(end_index)),
                 ).astype(np.float32)
-                line_valid = line_tube.contains_path(x, y)
+                line_valid = (
+                    line_tube.contains_path(x, y)
+                    if apply_theoretical_line_tube
+                    else True
+                )
                 crossing_count = 0
                 shallow = 0
                 crossing_angles: tuple[float, ...] = ()
@@ -965,6 +971,8 @@ def _build_global_path(
     config: PlannerConfig,
     label: str,
     generation_s: float,
+    *,
+    allow_synthetic_progress: bool = True,
 ) -> GlobalPath:
     pieces_x: list[np.ndarray] = []
     pieces_y: list[np.ndarray] = []
@@ -1006,14 +1014,20 @@ def _build_global_path(
         target = np.append(target, raw_distance[-1])
     x = np.interp(target, raw_distance, raw_x).astype(np.float32)
     y = np.interp(target, raw_distance, raw_y).astype(np.float32)
-    progress = np.maximum.accumulate(
-        np.interp(target, raw_distance, raw_progress)
-    ).astype(np.float32)
-    source_distance = np.interp(
-        progress,
-        np.arange(course.point_count, dtype=np.float64),
-        course.distance_mm.astype(np.float64),
-    ).astype(np.float32)
+    if allow_synthetic_progress:
+        # 旧理論下限の再現専用。競技合法経路はこの値を使わず、
+        # swept-footprintの実接触DPを完了してから値を入れる。
+        progress = np.maximum.accumulate(
+            np.interp(target, raw_distance, raw_progress)
+        ).astype(np.float32)
+        source_distance = np.interp(
+            progress,
+            np.arange(course.point_count, dtype=np.float64),
+            course.distance_mm.astype(np.float64),
+        ).astype(np.float32)
+    else:
+        progress = np.full(target.size, -1.0, dtype=np.float32)
+        source_distance = np.full(target.size, -1.0, dtype=np.float32)
     nearest_raw = np.minimum(
         np.searchsorted(raw_distance, target, side="right") - 1,
         raw_edge_id.size - 1,
@@ -1086,6 +1100,7 @@ def evaluate_global_path(
     enforce_geometry: bool = True,
     detailed_interactions: bool = True,
     line_tube: _LineTubeGrid | None = None,
+    enforce_board: bool = True,
 ) -> EvaluatedGlobalPath:
     plan = plan_speed(path.x_mm, path.y_mm, config)
     segment_m = np.diff(plan.distance_m)
@@ -1148,16 +1163,18 @@ def evaluate_global_path(
         line_possible = _line_coverage_is_possible(
             path.x_mm, path.y_mm, source_index, config
         )
-    if enforce_line_rule and not line_possible:
-        violations.append("規定最大車体でも白線から完全離脱")
-    elif line_possible:
-        warnings.append("実車外形未登録（白線重なり未保証）")
-    if boundary is None:
-        warnings.append("板境界未確認")
-    elif not board_path_is_inside(
-        path.x_mm, path.y_mm, boundary, config.board_robot_margin_mm
-    ):
-        violations.append("板外")
+    if enforce_line_rule:
+        if not line_possible:
+            violations.append("規定最大車体でも白線から完全離脱")
+        else:
+            warnings.append("実車外形未登録（白線重なり未保証）")
+    if enforce_board:
+        if boundary is None:
+            warnings.append("板境界未確認")
+        elif not board_path_is_inside(
+            path.x_mm, path.y_mm, boundary, config.board_robot_margin_mm
+        ):
+            violations.append("板外")
     if interactions.shallow_crossing_count:
         warnings.append(f"浅角交差{interactions.shallow_crossing_count}回")
     if interactions.parallel_distance_mm > 1.0:
@@ -1189,6 +1206,7 @@ def evaluate_global_path(
         len(path.selected_edges),
         skipped_source * 0.001,
         interactions.crossing_count,
+        interactions.shallow_crossing_count,
         (
             min(interactions.crossing_angles_deg)
             if interactions.crossing_angles_deg
@@ -1492,46 +1510,15 @@ def run_global_comparison(
     *,
     local_comparison: Comparison | None = None,
 ) -> GlobalComparison:
-    """幾何下限、reference、embedded-liteを同じ固定速度モデルで比較する。"""
+    """LN5実車外形をハードゲートにした比較へ委譲する。"""
 
-    config = config or PlannerConfig()
-    comparison = local_comparison or run_comparison(course, config)
-    boundary = load_board_boundary(course)
-    fallback_path = global_path_from_local(course, comparison, config)
-    fallback = evaluate_global_path(
+    # 循環importを避けるため、旧大域関数の定義完了後に読む。
+    from .legal_planner import run_legal_comparison
+
+    return run_legal_comparison(
         course,
-        fallback_path,
         config,
-        comparison.original.metrics.length_m,
-        boundary,
-    )
-    lower = _run_geometric_lower_bound(
-        course, comparison, config, boundary, fallback
-    )
-    reference = _run_mode(
-        course, comparison, config, "reference", boundary, fallback
-    )
-    embedded = _run_mode(
-        course, comparison, config, "embedded-lite", boundary, fallback
-    )
-    final = min(
-        (fallback, reference.adopted, embedded.adopted),
-        key=lambda item: (not item.metrics.valid, item.metrics.predicted_time_s),
-    )
-    board_status = (
-        f"CAD板境界確認済み（{boundary.source}）"
-        if boundary is not None and boundary.confirmed
-        else "板境界未確認"
-    )
-    return GlobalComparison(
-        comparison,
-        fallback,
-        lower,
-        reference,
-        embedded,
-        final,
-        boundary,
-        board_status,
+        local_comparison=local_comparison,
     )
 
 

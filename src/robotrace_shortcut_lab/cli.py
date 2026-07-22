@@ -5,7 +5,8 @@ from pathlib import Path
 from time import perf_counter
 
 from .course import load_course
-from .global_planner import run_global_comparison, run_global_mode
+from .global_planner import run_global_comparison
+from .legal_planner import run_legal_global_mode
 from .model import BatchCourseResult, COURSE_FILE, PlannerConfig
 from .report import write_all_courses_png, write_global_result_png
 
@@ -40,7 +41,7 @@ def _run_all_courses(mode: str, config: PlannerConfig) -> int:
         start = perf_counter()
         try:
             course = load_course(course_path)
-            local, global_result, board_status = run_global_mode(
+            local, global_result, board_status = run_legal_global_mode(
                 course, mode, config
             )
             baseline_time = local.best.metrics.predicted_time_s
@@ -48,6 +49,8 @@ def _run_all_courses(mode: str, config: PlannerConfig) -> int:
             selected_time = selected.metrics.predicted_time_s
             fallback = global_result.fallback_used
             status = "フォールバック" if fallback else "改善"
+            if not global_result.legal:
+                status += "・LN5実車外形未設定"
             if board_status == "板境界未確認":
                 status += "・板境界未確認"
             if not selected.metrics.valid:
@@ -113,6 +116,12 @@ def main(argv: list[str] | None = None) -> int:
         f"幾何下限: {comparison.geometric_lower_bound.metrics.predicted_time_s:.3f}s, "
         f"{comparison.geometric_lower_bound.metrics.length_m:.3f}m"
     )
+    theoretical = comparison.maximum_vehicle_lower_bound.adopted.metrics
+    print(
+        f"規定最大車体の非合法理論下限: "
+        f"{theoretical.predicted_time_s:.3f}s, {theoretical.length_m:.3f}m, "
+        "競技有効経路には不採用"
+    )
     for result in (comparison.reference, comparison.embedded_lite):
         metrics = result.adopted.metrics
         stats = result.stats
@@ -121,7 +130,8 @@ def main(argv: list[str] | None = None) -> int:
             f"shortcut={metrics.shortcut_edge_count}, anchors={stats.anchor_count}, "
             f"candidates={stats.candidate_edge_count}, valid={stats.valid_edge_count}, "
             f"topK={stats.top_k_count}, total={stats.total_s:.2f}s, "
-            f"fallback={result.fallback_used}"
+            f"fallback={result.fallback_used}, legal={result.legal}, "
+            f"status={result.legality_status}"
         )
     final = comparison.final.metrics
     print(
@@ -130,5 +140,6 @@ def main(argv: list[str] | None = None) -> int:
         f"{final.length_m:.3f}m, {final.shortcut_edge_count}辺"
     )
     print(comparison.board_status)
+    print(comparison.footprint_status)
     print(output.resolve())
     return 0

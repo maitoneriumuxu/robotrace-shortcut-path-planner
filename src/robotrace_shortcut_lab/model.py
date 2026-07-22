@@ -64,19 +64,30 @@ class PlannerConfig:
     shortcut_min_skip_mm: float = 250.0
     shortcut_min_saving_mm: float = 35.0
     connector_max_angle_deg: float = 55.0
-    # 規定1-3の最大投影円（直径250 mm）と白線半幅9.5 mmから作る、
-    # 「この距離を超えると規定最大車体でも白線へ届かない」絶対上限。
-    # 実車外形が未登録なので、この値以内でも実走適合とは断定しない。
+    # 旧2.980秒の非実車・非合法性確認の理論下限だけに使う。
+    # reference/embedded-lite/最終採用の合法判定には使用禁止。
     rule_max_robot_radius_mm: float = 125.0
     rule_line_half_width_mm: float = 9.5
     line_parallel_warning_distance_mm: float = 45.0
     line_parallel_warning_angle_deg: float = 15.0
-    # 交差リスクは予測時間と分離して保持する。既定は純粋な
-    # 最短時間下限を見るため零とし、比較時だけ明示的に変更できる。
+    # 以下の零係数も旧理論下限の再現専用。合法候補には後段の
+    # legal_*非零係数を用い、白線完全離脱は係数でなくハード棄却する。
     line_crossing_penalty_s: float = 0.0
     line_shallow_crossing_penalty_s: float = 0.0
     line_parallel_penalty_s_per_m: float = 0.0
-    board_robot_margin_mm: float = 125.0
+    board_robot_margin_mm: float = 125.0  # 旧規定最大車体理論下限専用
+    white_line_half_width_mm: float = 9.5
+    legal_pose_step_mm: float = 2.0
+    legal_yaw_step_deg: float = 1.0
+    contact_dp_local_jump_segments: int = 8
+    minimum_overlap_area_mm2: float = 20.0
+    minimum_penetration_mm: float = 1.0
+    minimum_contact_margin_mm: float = 1.0
+    robust_thresholds_confirmed: bool = False
+    # 合法性と分離したセンサ誤認リスク。合法候補間の同順位比較にだけ使う。
+    legal_crossing_risk_penalty_s: float = 0.01
+    legal_shallow_crossing_risk_penalty_s: float = 0.10
+    legal_parallel_risk_penalty_s_per_m: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -187,6 +198,51 @@ class BoardBoundary:
 
 
 @dataclass(frozen=True)
+class VehicleFootprint:
+    """LN5のロボット座標系で定義した床面投影外形。"""
+
+    polygon_components_mm: tuple[np.ndarray, ...]
+    origin_definition: str
+    front_mm: float | None
+    rear_mm: float | None
+    left_mm: float | None
+    right_mm: float | None
+    safety_margin_mm: float
+    source: str
+    confirmed: bool
+
+
+@dataclass(frozen=True)
+class ContactEvaluation:
+    """2 mm以下の中間姿勢を含む実車白線接触評価。"""
+
+    pose_distance_mm: np.ndarray
+    pose_x_mm: np.ndarray
+    pose_y_mm: np.ndarray
+    pose_yaw_rad: np.ndarray
+    contact_segments: tuple[tuple[int, ...], ...]
+    source_progress_index: np.ndarray
+    overlap_area_mm2: np.ndarray
+    penetration_mm: np.ndarray
+    contact_boundary_length_mm: np.ndarray
+    contact_margin_mm: np.ndarray
+    simultaneous_line_count: np.ndarray
+    past_contact_count: np.ndarray
+    current_contact_count: np.ndarray
+    future_contact_count: np.ndarray
+    legal: bool
+    robust: bool
+    detachment_count: int
+    line_switch_count: int
+    min_overlap_area_mm2: float
+    min_penetration_mm: float
+    min_contact_margin_mm: float
+    min_margin_pose_index: int
+    violation: str
+    warning: str
+
+
+@dataclass(frozen=True)
 class GlobalPath:
     """約10 mm間隔へ再サンプリングした大域経路。"""
 
@@ -218,6 +274,7 @@ class GlobalMetrics:
     shortcut_edge_count: int
     skipped_source_distance_m: float
     line_crossing_count: int
+    shallow_line_crossing_count: int
     min_line_crossing_angle_deg: float
     past_line_crossing_count: int
     future_line_crossing_count: int
@@ -262,6 +319,10 @@ class GlobalSearchResult:
     adopted: EvaluatedGlobalPath
     stats: GlobalSearchStats
     fallback_used: bool
+    contact: ContactEvaluation | None = None
+    legal: bool = False
+    robust: bool = False
+    legality_status: str = "競技合法性未評価"
 
 
 @dataclass(frozen=True)
@@ -269,11 +330,14 @@ class GlobalComparison:
     local: Comparison
     current_baseline: EvaluatedGlobalPath
     geometric_lower_bound: EvaluatedGlobalPath
+    maximum_vehicle_lower_bound: GlobalSearchResult
     reference: GlobalSearchResult
     embedded_lite: GlobalSearchResult
     final: EvaluatedGlobalPath
     board_boundary: BoardBoundary | None
     board_status: str
+    vehicle_footprint: VehicleFootprint
+    footprint_status: str
 
 
 @dataclass(frozen=True)
