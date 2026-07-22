@@ -5,10 +5,11 @@ from pathlib import Path
 from time import perf_counter
 
 from .course import load_course
+from .deep_planner import run_deep_reference
 from .global_planner import run_global_comparison
 from .legal_planner import run_legal_global_mode
 from .model import BatchCourseResult, COURSE_FILE, PlannerConfig
-from .report import write_all_courses_png, write_global_result_png
+from .report import write_all_courses_png, write_deep_result_png, write_global_result_png
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -23,9 +24,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=("reference", "embedded-lite"),
+        choices=("reference", "embedded-lite", "deep-reference"),
         default="reference",
         help="探索規模。単一コース画像では差を示すため両方を計算します",
+    )
+    parser.add_argument(
+        "--deep-budget-seconds",
+        type=float,
+        default=1_500.0,
+        help="deep-referenceの総計算時間上限（既定1500秒）",
     )
     parser.add_argument(
         "--all-courses",
@@ -115,6 +122,40 @@ def main(argv: list[str] | None = None) -> int:
         return _run_all_courses(args.mode, config)
 
     course = load_course(args.course)
+    if args.mode == "deep-reference":
+        result = run_deep_reference(
+            course,
+            config,
+            budget_s=args.deep_budget_seconds,
+            progress=print,
+        )
+        output = write_deep_result_png(
+            Path("outputs/deep_result.png"), course, result, config
+        )
+        print(f"現在値: {result.current.metrics.predicted_time_s:.6f}s")
+        for stage in result.stage_records:
+            print(
+                f"{stage.name}: anchors={stage.anchor_count}, "
+                f"edges={stage.generated_edge_count}, checked={stage.screened_edge_count}, "
+                f"legal={stage.legal_edge_count}, K={stage.top_k_count}, "
+                f"full={stage.full_path_count}, best={stage.best_time_s:.6f}s, "
+                f"elapsed={stage.elapsed_s:.1f}s"
+            )
+        print(
+            f"legal幾何下限: {result.geometric_lower_bound.metrics.predicted_time_s:.6f}s"
+        )
+        print(f"deep legal最速: {result.legal_best.metrics.predicted_time_s:.6f}s")
+        print(f"deep robust最速: {result.robust_best.metrics.predicted_time_s:.6f}s")
+        if result.strong_robust_best is not None:
+            print(
+                "±5mm/±2deg最速: "
+                f"{result.strong_robust_best.metrics.predicted_time_s:.6f}s"
+            )
+        print(
+            f"評価候補={result.evaluated_candidate_count}, 総時間={result.total_s:.1f}s"
+        )
+        print(output.resolve())
+        return 0
     comparison = run_global_comparison(course, config)
     output = write_global_result_png(
         Path("outputs/result.png"), comparison, config

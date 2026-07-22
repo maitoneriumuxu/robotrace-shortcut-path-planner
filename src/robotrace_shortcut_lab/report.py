@@ -11,10 +11,27 @@ import numpy as np
 from .model import (
     BatchCourseResult,
     Comparison,
+    ContactSensitivity,
+    Course,
     EvaluatedGlobalPath,
     GlobalComparison,
     PlannerConfig,
 )
+
+
+def _sensitivity_pass(
+    sensitivity: ContactSensitivity | None, position_mm: float, yaw_deg: float
+) -> str:
+    if sensitivity is None:
+        return "要求外"
+    position = np.where(np.isclose(sensitivity.position_error_mm, position_mm))[0]
+    yaw = np.where(np.isclose(sensitivity.yaw_error_deg, yaw_deg))[0]
+    if position.size == 0 or yaw.size == 0:
+        return "未評価"
+    return "合格" if (
+        sensitivity.position_all_legal[int(position[0])]
+        and sensitivity.yaw_all_legal[int(yaw[0])]
+    ) else "不合格"
 
 
 COLORS = ("#6B7280", "#2563EB", "#D97706", "#059669")
@@ -1226,6 +1243,280 @@ def write_global_result_png(
         ha="center",
         va="bottom",
         fontsize=8.0,
+        color="#4B5563",
+    )
+    figure.savefig(output, bbox_inches="tight", facecolor="white")
+    plt.close(figure)
+    return output
+
+
+def write_deep_result_png(
+    destination: str | Path,
+    course: Course,
+    result,
+    config: PlannerConfig,
+) -> Path:
+    """deep-referenceの経路・合法性・収束を一枚で監査する。"""
+
+    output = Path(destination)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _set_japanese_font()
+    plt.rcParams["axes.unicode_minus"] = False
+    figure = plt.figure(figsize=(22, 15), dpi=150, facecolor="white")
+    grid = figure.add_gridspec(
+        3,
+        4,
+        height_ratios=(1.15, 0.78, 0.86),
+        width_ratios=(1.0, 1.0, 1.0, 1.0),
+        hspace=0.30,
+        wspace=0.25,
+    )
+    map_axis = figure.add_subplot(grid[0, :2])
+    table_axis = figure.add_subplot(grid[0, 2:])
+    selected_edges = result.legal_best.path.selected_edges or result.current.path.selected_edges
+    zoom_count = max(1, min(4, len(selected_edges)))
+    zoom_grid = grid[1, :].subgridspec(1, zoom_count, wspace=0.22)
+    zoom_axes = [figure.add_subplot(zoom_grid[0, index]) for index in range(zoom_count)]
+    contact_axis = figure.add_subplot(grid[2, 0])
+    time_axis = figure.add_subplot(grid[2, 1:3])
+    convergence_axis = figure.add_subplot(grid[2, 3])
+
+    items = (
+        result.current,
+        result.legal_best,
+        result.robust_best,
+        result.geometric_lower_bound,
+    )
+    contacts = (
+        result.current_contact,
+        result.legal_contact,
+        result.robust_contact,
+        result.geometric_lower_contact,
+    )
+    sensitivities = (
+        result.current_sensitivity,
+        result.legal_sensitivity,
+        result.robust_sensitivity,
+        None,
+    )
+    labels = ("現在4.403810秒", "deep legal最速", "deep robust最速", "legal幾何下限")
+    colors = ("#D97706", "#BE185D", "#2563EB", "#4B5563")
+    styles = ("--", "-", "-.", ":")
+
+    map_axis.plot(
+        course.x_mm,
+        course.y_mm,
+        color="#CBD5E1",
+        linewidth=2.2,
+        label="幅19mm白線中心",
+        zorder=1,
+    )
+    for item, label, color, style in zip(items, labels, colors, styles, strict=True):
+        map_axis.plot(
+            item.path.x_mm,
+            item.path.y_mm,
+            color=color,
+            linestyle=style,
+            linewidth=1.25,
+            label=f"{label} {item.metrics.predicted_time_s:.6f}s",
+            zorder=3,
+        )
+    map_axis.set_title("2025年全日本：全LINE通過・白線接触継続の合法経路", fontsize=13)
+    map_axis.set_xlabel("X [mm]")
+    map_axis.set_ylabel("Y [mm]")
+    map_axis.set_aspect("equal", adjustable="box")
+    map_axis.grid(True, color="#D1D5DB", linewidth=0.5, alpha=0.65)
+    map_axis.legend(loc="best", fontsize=7.1, framealpha=0.92)
+
+    table_axis.axis("off")
+    row_labels = (
+        "予測時間 [s]",
+        "4秒との差 [s]",
+        "現在との差 [s]",
+        "経路長 [m]",
+        "採用辺数",
+        "白線完全離脱",
+        "未通過segment",
+        "最小重なり [mm²]",
+        "最小接触余裕 [mm]",
+        "同時接触姿勢数",
+        "±2mm / ±1deg",
+        "±5mm / ±2deg",
+        "最大omega [deg/s]",
+        "最小半径 [mm]",
+        "最大|dκ/ds| [1/m²]",
+        "計算時間 [s]",
+        "評価候補数",
+    )
+    columns: list[list[str]] = []
+    current_time = result.current.metrics.predicted_time_s
+    for item, contact, sensitivity in zip(items, contacts, sensitivities, strict=True):
+        metrics = item.metrics
+        columns.append(
+            [
+                f"{metrics.predicted_time_s:.6f}",
+                f"{metrics.predicted_time_s - 4.0:+.6f}",
+                f"{metrics.predicted_time_s - current_time:+.6f}",
+                f"{metrics.length_m:.6f}",
+                str(metrics.shortcut_edge_count),
+                str(contact.detachment_count),
+                str(contact.unvisited_segment_count),
+                f"{contact.min_overlap_area_mm2:.3f}",
+                f"{contact.min_contact_margin_mm:.3f}",
+                str(contact.simultaneous_contact_pose_count),
+                _sensitivity_pass(sensitivity, 2.0, 1.0),
+                _sensitivity_pass(sensitivity, 5.0, 2.0),
+                f"{metrics.max_omega_deg_s:.1f}",
+                f"{metrics.min_radius_mm:.2f}",
+                f"{metrics.max_curvature_slew_per_m2:.1f}",
+                "seed" if item is result.current else f"{result.total_s:.1f}",
+                "—" if item is result.current else str(result.evaluated_candidate_count),
+            ]
+        )
+    cells = [
+        [row_labels[row], *(column[row] for column in columns)]
+        for row in range(len(row_labels))
+    ]
+    table = table_axis.table(
+        cellText=cells,
+        colLabels=("評価項目", "現在", "legal最速", "robust最速", "legal下限"),
+        cellLoc="right",
+        colLoc="center",
+        bbox=(0.0, 0.02, 1.0, 0.94),
+        colWidths=(0.31, 0.17, 0.18, 0.18, 0.16),
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(6.7)
+    for (row, column), cell in table.get_celld().items():
+        cell.set_edgecolor("#D1D5DB")
+        cell.set_linewidth(0.45)
+        if row == 0:
+            cell.set_facecolor("#E5E7EB")
+        elif column == 0:
+            cell.set_facecolor("#F3F4F6")
+            cell.set_text_props(ha="left")
+    table_axis.set_title("固定ATTACKモデル・合法性・robust比較", fontsize=13, pad=8)
+
+    for zoom_index, axis in enumerate(zoom_axes):
+        if zoom_index >= len(selected_edges):
+            axis.axis("off")
+            axis.text(0.5, 0.5, "追加ショートカットなし", ha="center", va="center")
+            continue
+        _, start_index, end_index, kind = selected_edges[zoom_index]
+        pad = max(8, int(round((end_index - start_index) * 0.08)))
+        lo = max(0, start_index - pad)
+        hi = min(course.point_count - 1, end_index + pad)
+        axis.plot(
+            course.x_mm[lo : hi + 1],
+            course.y_mm[lo : hi + 1],
+            color="#CBD5E1",
+            linewidth=3.0,
+            label="通過対象LINE",
+        )
+        for item, color, style in zip(items[:3], colors[:3], styles[:3], strict=True):
+            progress = item.path.source_progress_index
+            mask = (progress >= lo) & (progress <= hi)
+            if np.any(mask):
+                axis.plot(
+                    item.path.x_mm[mask],
+                    item.path.y_mm[mask],
+                    color=color,
+                    linestyle=style,
+                    linewidth=1.15,
+                )
+        axis.scatter(
+            [course.x_mm[start_index], course.x_mm[end_index]],
+            [course.y_mm[start_index], course.y_mm[end_index]],
+            s=20,
+            color=("#059669", "#DC2626"),
+            zorder=6,
+        )
+        axis.set_title(f"辺{zoom_index + 1}: {start_index}→{end_index}\n{kind}", fontsize=8.0)
+        axis.set_aspect("equal", adjustable="datalim")
+        axis.grid(True, color="#E5E7EB", linewidth=0.4)
+        axis.tick_params(labelsize=6.0)
+
+    contact = result.legal_contact
+    pose_index = int(contact.min_margin_pose_index)
+    px = float(contact.pose_x_mm[pose_index])
+    py = float(contact.pose_y_mm[pose_index])
+    pyaw = float(contact.pose_yaw_rad[pose_index])
+    contact_axis.plot(course.x_mm, course.y_mm, color="#CBD5E1", linewidth=4.0)
+    for segment_index in contact.contact_segments[pose_index]:
+        contact_axis.plot(
+            course.x_mm[segment_index : segment_index + 2],
+            course.y_mm[segment_index : segment_index + 2],
+            color="#059669",
+            linewidth=7.0,
+            solid_capstyle="round",
+        )
+    bar = np.asarray(((-5.0, -100.0), (5.0, -100.0), (5.0, 100.0), (-5.0, 100.0)))
+    _draw_vehicle_outline(
+        contact_axis, (bar,), px, py, pyaw, color="#BE185D", alpha=0.28
+    )
+    contact_axis.scatter([px], [py], color="#111827", s=12, zorder=7)
+    contact_axis.set_xlim(px - 180.0, px + 180.0)
+    contact_axis.set_ylim(py - 180.0, py + 180.0)
+    contact_axis.set_aspect("equal", adjustable="box")
+    contact_axis.grid(True, color="#E5E7EB", linewidth=0.4)
+    contact_axis.set_title(
+        f"最小接触余裕姿勢 {contact.min_contact_margin_mm:.3f}mm\n緑=実接触LINE、紫=10×200mm横バー",
+        fontsize=8.5,
+    )
+
+    source_distance = course.distance_mm.astype(np.float64)
+    current_curve = _time_on_source_progress(result.current, source_distance)
+    for item, label, color, style in zip(items, labels, colors, styles, strict=True):
+        curve = _time_on_source_progress(item, source_distance)
+        time_axis.plot(
+            source_distance * 0.001,
+            curve - current_curve,
+            color=color,
+            linestyle=style,
+            linewidth=1.15,
+            label=label,
+        )
+    time_axis.axhline(0.0, color="#9CA3AF", linewidth=0.7)
+    time_axis.set_title("現在経路に対する累積予測時間差", fontsize=10)
+    time_axis.set_xlabel("原コース進行距離 [m]")
+    time_axis.set_ylabel("累積時間差 [s]")
+    time_axis.grid(True, color="#D1D5DB", linewidth=0.45, alpha=0.65)
+    time_axis.legend(loc="best", fontsize=7.0, ncol=2)
+
+    convergence_axis.step(
+        result.convergence_time_s,
+        result.convergence_best_s,
+        where="post",
+        color="#BE185D",
+        linewidth=1.25,
+        label="改善時点",
+    )
+    if result.stage_records:
+        convergence_axis.plot(
+            [record.cumulative_s for record in result.stage_records],
+            [record.best_time_s for record in result.stage_records],
+            marker="o",
+            markersize=3.0,
+            color="#2563EB",
+            linewidth=0.8,
+            label="段階終了",
+        )
+    convergence_axis.axhline(4.0, color="#DC2626", linestyle="--", linewidth=0.8)
+    convergence_axis.set_title("探索時間に対する最良タイムの収束", fontsize=9.2)
+    convergence_axis.set_xlabel("経過時間 [s]")
+    convergence_axis.set_ylabel("予測時間 [s]")
+    convergence_axis.grid(True, color="#D1D5DB", linewidth=0.45, alpha=0.65)
+    convergence_axis.legend(loc="best", fontsize=6.8)
+
+    figure.text(
+        0.5,
+        0.010,
+        "固定条件: 10×200mm横バー、全LINE segment順次通過、完全離脱0、2mm/1deg中間姿勢、実接触DP、板内。"
+        " R10=min=始終端3.6、max13m/s、加速20～55、減速55、omega 300～1500deg/s、AALP100、前後4反復。"
+        " 設計上の予測であり、as-built・実走・競技適合を保証しません。",
+        ha="center",
+        va="bottom",
+        fontsize=7.6,
         color="#4B5563",
     )
     figure.savefig(output, bbox_inches="tight", facecolor="white")
